@@ -277,7 +277,7 @@ Returns server and Lighthouse version info. This is the only way Claude can see 
 
 ```
 lightcap status
-  Server:     @icjia/lightcap v0.1.0
+  Server:     @icjia/lightcap v0.1.3
   Lighthouse: v13.1.0 (latest: v13.2.0 — update available)
   Node:       v22.22.0
   Platform:   darwin arm64
