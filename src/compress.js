@@ -19,10 +19,10 @@ function formatMetricValue(id, numericValue) {
   return `${Math.round(numericValue)}ms`;
 }
 
-function metricPassFail(id, numericValue) {
+function metricFailing(id, numericValue) {
   const threshold = CONFIG.METRIC_THRESHOLDS[id];
-  if (threshold == null) return '';
-  return numericValue <= threshold ? ' ✓' : ' ✗';
+  if (threshold == null) return false;
+  return numericValue > threshold;
 }
 
 function getFailedAudits(lhr, categoryId, maxIssues) {
@@ -49,44 +49,63 @@ function extractElements(audit) {
   const items = audit.details?.items;
   if (!Array.isArray(items)) return [];
 
-  const selectors = [];
+  // Deduplicate selectors and count occurrences
+  const selectorCounts = new Map();
   for (const item of items) {
-    const sel = item.node?.selector;
+    const sel = truncateSelector(item.node?.selector);
     if (sel) {
-      selectors.push(truncateSelector(sel));
+      selectorCounts.set(sel, (selectorCounts.get(sel) || 0) + 1);
     }
   }
-  return selectors;
+
+  const elements = [];
+  for (const [sel, count] of selectorCounts) {
+    elements.push(count > 1 ? `${sel} (×${count})` : sel);
+  }
+  return elements;
 }
 
-function formatElementList(selectors) {
-  if (selectors.length === 0) return '';
+function formatElementList(elements) {
+  if (elements.length === 0) return '';
 
-  const shown = selectors.slice(0, CONFIG.MAX_ELEMENTS_PER_ISSUE);
-  const remaining = selectors.length - shown.length;
+  const shown = elements.slice(0, CONFIG.MAX_ELEMENTS_PER_ISSUE);
+  const remaining = elements.length - shown.length;
 
-  let line = '      → ' + shown.join(', ');
+  let line = '    → ' + shown.join(', ');
   if (remaining > 0) {
-    line += ` (and ${remaining} more)`;
+    line += ` (+${remaining})`;
   }
   return line;
 }
 
+// Shorten verbose audit titles — use displayValue if available, else compact the title
+function auditDisplay(audit) {
+  if (audit.displayValue) return audit.displayValue;
+  // Truncate long titles to save tokens
+  const title = audit.title;
+  return title.length > 60 ? title.slice(0, 57) + '...' : title;
+}
+
+// Estimate tokens: ~4 chars per token for English text
+function estimateTokens(text) {
+  return Math.ceil(text.length / 4);
+}
+
 // ─── Full Report Compression ───────────────────────────────────────
 
-const CATEGORY_LABELS = {
-  'performance': 'Performance',
-  'accessibility': 'Accessibility',
-  'best-practices': 'Best Practices',
+const CATEGORY_SHORT = {
+  'performance': 'Perf',
+  'accessibility': 'A11y',
+  'best-practices': 'BP',
   'seo': 'SEO',
 };
 
-const METRIC_LABELS = {
-  'first-contentful-paint': 'First Contentful Paint',
-  'largest-contentful-paint': 'Largest Contentful Paint',
-  'total-blocking-time': 'Total Blocking Time',
-  'cumulative-layout-shift': 'Cumulative Layout Shift',
-  'speed-index': 'Speed Index',
+const METRIC_SHORT = {
+  'first-contentful-paint': 'FCP',
+  'largest-contentful-paint': 'LCP',
+  'total-blocking-time': 'TBT',
+  'cumulative-layout-shift': 'CLS',
+  'speed-index': 'SI',
 };
 
 export function compressFullReport(lhr, maxIssues = CONFIG.MAX_ISSUES_DEFAULT) {
@@ -94,32 +113,41 @@ export function compressFullReport(lhr, maxIssues = CONFIG.MAX_ISSUES_DEFAULT) {
   const url = lhr.finalDisplayedUrl || lhr.requestedUrl || lhr.finalUrl || 'unknown';
   const formFactor = lhr.configSettings?.formFactor || 'unknown';
 
-  lines.push(`Lighthouse audit: ${url}`);
-  lines.push(`Viewport: ${formFactor}`);
-  lines.push('');
-
-  // Scores
-  lines.push('═══ Scores ═══');
+  // Header: single line with all scores
+  const scoreParts = [];
   for (const catId of CONFIG.DEFAULT_CATEGORIES) {
     const cat = lhr.categories?.[catId];
     if (!cat) continue;
-    const label = CATEGORY_LABELS[catId] || catId;
+    const label = CATEGORY_SHORT[catId] || catId;
     const score = Math.round((cat.score ?? 0) * 100);
-    lines.push(`  ${label.padEnd(16)} ${score} / 100`);
+    scoreParts.push(`${label}:${score}`);
+  }
+  lines.push(`${url} [${formFactor}] ${scoreParts.join(' ')}`);
+
+  // Failing metrics only — one compact line
+  const failingMetrics = [];
+  for (const [id, label] of Object.entries(METRIC_SHORT)) {
+    const audit = lhr.audits?.[id];
+    if (!audit || audit.numericValue == null) continue;
+    if (metricFailing(id, audit.numericValue)) {
+      failingMetrics.push(`${label}=${formatMetricValue(id, audit.numericValue)}`);
+    }
+  }
+  if (failingMetrics.length > 0) {
+    lines.push(`Failing metrics: ${failingMetrics.join(' ')}`);
   }
 
-  // Failed audits per category
+  // Failed audits per category — skip categories with no failures
   for (const catId of CONFIG.DEFAULT_CATEGORIES) {
     const failed = getFailedAudits(lhr, catId, maxIssues);
     if (failed.length === 0) continue;
 
+    const label = CATEGORY_SHORT[catId] || catId;
     lines.push('');
-    const label = CATEGORY_LABELS[catId] || catId;
-    lines.push(`═══ ${label} (top ${failed.length} issues) ═══`);
+    lines.push(`── ${label} (${failed.length} issues) ──`);
 
     for (const audit of failed) {
-      const display = audit.displayValue || audit.title;
-      lines.push(`  ✗ ${audit.id}: ${display}`);
+      lines.push(`  ✗ ${audit.id}: ${auditDisplay(audit)}`);
 
       const elements = extractElements(audit);
       const elLine = formatElementList(elements);
@@ -127,28 +155,10 @@ export function compressFullReport(lhr, maxIssues = CONFIG.MAX_ISSUES_DEFAULT) {
     }
   }
 
-  // Metrics
-  const metricIds = Object.keys(METRIC_LABELS);
-  const metricLines = [];
-  for (const id of metricIds) {
-    const audit = lhr.audits?.[id];
-    if (!audit || audit.numericValue == null) continue;
-    const label = METRIC_LABELS[id];
-    const value = formatMetricValue(id, audit.numericValue);
-    const pf = metricPassFail(id, audit.numericValue);
-    metricLines.push(`  ${label.padEnd(28)} ${value}${pf}`);
-  }
-
-  if (metricLines.length > 0) {
-    lines.push('');
-    lines.push('═══ Metrics ═══');
-    lines.push(...metricLines);
-  }
-
   // Truncate if too long
   if (lines.length > CONFIG.MAX_OUTPUT_LINES) {
     const truncated = lines.slice(0, CONFIG.MAX_OUTPUT_LINES);
-    truncated.push('(output truncated — lower maxIssues for more detail per issue)');
+    truncated.push('(truncated — lower maxIssues for more detail)');
     return truncated.join('\n');
   }
 
@@ -247,14 +257,9 @@ export function compressA11yReport(lhr, maxIssues = CONFIG.MAX_ISSUES_A11Y_DEFAU
   const a11yCat = lhr.categories?.accessibility;
   const score = a11yCat ? Math.round((a11yCat.score ?? 0) * 100) : 'N/A';
 
-  lines.push(`Accessibility audit: ${url}`);
-  lines.push(`Viewport: ${formFactor}`);
-  lines.push(`Score: ${score} / 100`);
-
   // Get all failed a11y audits
   let failed = getFailedAudits(lhr, 'accessibility', CONFIG.MAX_ISSUES_CAP);
 
-  // WCAG filter
   if (wcagOnly) {
     failed = failed.filter(audit => getWcagTags(audit).length > 0);
   }
@@ -266,16 +271,28 @@ export function compressA11yReport(lhr, maxIssues = CONFIG.MAX_ISSUES_A11Y_DEFAU
     groups[impact].push(audit);
   }
 
-  // Sort each group by element count descending, cap at maxIssues
+  // Count totals for header
   let totalIssues = 0;
   let totalElements = 0;
   const impactCounts = {};
+  for (const impact of IMPACT_ORDER) {
+    impactCounts[impact] = groups[impact].length;
+    totalIssues += groups[impact].length;
+  }
 
+  // Compact header: url, score, and impact summary on one line
+  const impactSummary = IMPACT_ORDER
+    .filter(i => impactCounts[i] > 0)
+    .map(i => `${impactCounts[i]}${i[0]}`) // e.g., "2c 3s 4m"
+    .join(' ');
+  lines.push(`A11y: ${url} [${formFactor}] ${score}/100 — ${totalIssues} issues (${impactSummary})`);
+
+  // Detail per impact group — skip empty groups
   for (const impact of IMPACT_ORDER) {
     const audits = groups[impact];
     if (audits.length === 0) continue;
 
-    // Sort by number of affected elements descending
+    // Sort by element count descending
     audits.sort((a, b) => {
       const aCount = a.details?.items?.length || 0;
       const bCount = b.details?.items?.length || 0;
@@ -283,49 +300,50 @@ export function compressA11yReport(lhr, maxIssues = CONFIG.MAX_ISSUES_A11Y_DEFAU
     });
 
     const capped = audits.slice(0, Math.min(maxIssues, CONFIG.MAX_ISSUES_CAP));
+    const skipped = audits.length - capped.length;
 
     let groupElements = 0;
     const issueLines = [];
 
     for (const audit of capped) {
       const wcagRef = getWcagRef(audit);
-      const wcagStr = wcagRef ? ` [WCAG ${wcagRef}]` : '';
-
-      issueLines.push(`  ✗ ${audit.id}${wcagStr} — ${audit.title}`);
+      const wcagStr = wcagRef ? ` [${wcagRef}]` : '';
 
       const elements = extractA11yElements(audit);
       groupElements += elements.length;
+      const elCount = elements.length > 0 ? ` (${elements.length} el)` : '';
 
-      const shown = elements.slice(0, CONFIG.MAX_ELEMENTS_PER_ISSUE);
+      issueLines.push(`  ✗ ${audit.id}${wcagStr}${elCount}`);
+
+      // Show affected elements — full detail for critical/serious, compact for moderate/minor
+      const maxEls = (impact === 'critical' || impact === 'serious')
+        ? CONFIG.MAX_ELEMENTS_PER_ISSUE
+        : Math.min(3, CONFIG.MAX_ELEMENTS_PER_ISSUE);
+
+      const shown = elements.slice(0, maxEls);
       const remaining = elements.length - shown.length;
 
       for (const el of shown) {
-        issueLines.push(`      → ${el}`);
+        issueLines.push(`    → ${el}`);
       }
       if (remaining > 0) {
-        issueLines.push(`      → (and ${remaining} more)`);
+        issueLines.push(`    → (+${remaining})`);
       }
     }
 
-    lines.push('');
-    lines.push(`═══ ${impact.charAt(0).toUpperCase() + impact.slice(1)} (${capped.length} issues, ${groupElements} elements) ═══`);
-    lines.push(...issueLines);
-
-    totalIssues += capped.length;
     totalElements += groupElements;
-    impactCounts[impact] = capped.length;
-  }
 
-  // Summary
-  lines.push('');
-  lines.push(`Summary: ${totalIssues} issues | ${totalElements} affected elements`);
-  const parts = IMPACT_ORDER.map(i => `${i.charAt(0).toUpperCase() + i.slice(1)}: ${impactCounts[i] || 0}`);
-  lines.push(`  ${parts.join(' | ')}`);
+    const label = impact[0].toUpperCase() + impact.slice(1);
+    const skippedNote = skipped > 0 ? ` +${skipped} more` : '';
+    lines.push('');
+    lines.push(`── ${label} (${capped.length} issues, ${groupElements} el)${skippedNote} ──`);
+    lines.push(...issueLines);
+  }
 
   // Truncate if too long
   if (lines.length > CONFIG.MAX_OUTPUT_LINES) {
     const truncated = lines.slice(0, CONFIG.MAX_OUTPUT_LINES);
-    truncated.push('(output truncated — lower maxIssues for more detail per issue)');
+    truncated.push('(truncated — lower maxIssues for more detail)');
     return truncated.join('\n');
   }
 
@@ -337,9 +355,10 @@ export function compressA11yReport(lhr, maxIssues = CONFIG.MAX_ISSUES_A11Y_DEFAU
 export const _test = {
   truncateSelector,
   formatMetricValue,
-  metricPassFail,
+  metricFailing,
   getFailedAudits,
   extractElements,
+  estimateTokens,
   getImpact,
   getWcagTags,
   parseWcagCriterion,

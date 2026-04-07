@@ -178,39 +178,34 @@ Full Lighthouse audit across selected categories. Runs all four categories by de
 | `viewport` | string | `desktop` | `desktop` or `mobile` |
 | `directory` | string | — | Save full HTML report to this directory |
 
-**Returns:** Structured text with scores, top issues per category, and core web vitals. Typical response is ~40 lines / ~600 tokens.
+**Returns:** Compact structured text with scores, failing metrics, and top issues. Zero tokens wasted on passing audits or metrics.
 
-**Example output:**
+**Example output (page with issues):**
 
 ```
-Lighthouse audit: http://localhost:3000
-Viewport: desktop
+http://localhost:3000 [desktop] Perf:72 A11y:88 BP:95 SEO:91
+Failing metrics: LCP=4.2s CLS=0.12
 
-═══ Scores ═══
-  Performance      72 / 100
-  Accessibility    88 / 100
-  Best Practices   95 / 100
-  SEO              91 / 100
-
-═══ Performance (top 5 issues) ═══
+── Perf (5 issues) ──
   ✗ largest-contentful-paint: 4.2 s
   ✗ unused-css-rules: Reduce unused CSS
   ✗ render-blocking-resources: Eliminate render-blocking resources
-      → link[href="styles.css"], script[src="app.js"]
+    → link[href="styles.css"], script[src="app.js"]
 
-═══ Accessibility (top 5 issues) ═══
-  ✗ image-alt: Image elements do not have `[alt]` attributes
-      → img.hero-image, img.card-thumb (and 9 more)
-  ✗ color-contrast: Background and foreground colors do not have a sufficient contrast ratio
-      → p.subtitle, span.caption (and 5 more)
-
-═══ Metrics ═══
-  First Contentful Paint       1.2s ✓
-  Largest Contentful Paint     4.2s ✗
-  Total Blocking Time          210ms ✓
-  Cumulative Layout Shift      0.12 ✗
-  Speed Index                  2.8s ✓
+── A11y (2 issues) ──
+  ✗ image-alt: 12 images missing alt text
+    → img.hero-image, img.card-thumb (×8) (+2)
+  ✗ color-contrast: Insufficient contrast ratio
+    → p.subtitle, span.caption (+5)
 ```
+
+**Example output (clean page):**
+
+```
+http://localhost:3000 [desktop] Perf:98 A11y:100 BP:100 SEO:100
+```
+
+One line. ~30 tokens. No wasted context on a page that doesn't need fixing.
 
 ### `run_a11y`
 
@@ -224,36 +219,49 @@ Accessibility-only audit. Faster than a full audit (~5s vs ~20s) and provides mo
 | `wcagOnly` | boolean | false | Only return issues with WCAG tags (filters out best-practice-only items) |
 | `directory` | string | — | Save full HTML report to this directory |
 
-**Returns:** Structured text with accessibility score, issues grouped by impact level (critical/serious/moderate/minor), WCAG criteria references, and CSS selectors. Typical response is ~35-80 lines.
+**Returns:** Compact structured text with score, impact-grouped issues, WCAG refs, and CSS selectors. Critical/serious issues get full element detail; moderate/minor get compact detail.
 
 **Example output:**
 
 ```
-Accessibility audit: http://localhost:3000
-Viewport: desktop
-Score: 88 / 100
+A11y: http://localhost:3000 [desktop] 88/100 — 9 issues (2c 3s 4m)
 
-═══ Critical (2 issues, 20 elements) ═══
-  ✗ image-alt [WCAG 1.1.1] — Image elements do not have `[alt]` attributes
-      → img.hero-image
-      → img.card-thumb (×8)
-      → img.logo
-      → img.partner-logo (×2)
-  ✗ color-contrast [WCAG 1.4.3] — Background and foreground colors do not have a sufficient contrast ratio
-      → p.subtitle
-      → span.caption
-      → a.nav-link
-      → (and 5 more)
+── Critical (2 issues, 20 el) ──
+  ✗ image-alt [1.1.1] (12 el)
+    → img.hero-image
+    → img.card-thumb (×8)
+    → img.logo
+    → img.partner-logo (×2)
+    → (+7)
+  ✗ color-contrast [1.4.3] (8 el)
+    → p.subtitle: foreground #999 on #fff = 3.2:1 (needs 4.5:1)
+    → span.caption: foreground #aaa on #f5f5f5 = 2.8:1 (needs 4.5:1)
+    → a.nav-link
+    → (+5)
 
-═══ Serious (3 issues, 6 elements) ═══
-  ✗ heading-order [WCAG 1.3.1] — Heading elements are not in a sequentially-descending order
-      → section.content > h4
-  ✗ link-name [WCAG 2.4.4] — Links do not have a discernible name
-      → a.icon-link, a.social-fb, a.social-tw
+── Serious (3 issues, 6 el) ──
+  ✗ heading-order [1.3.1] (1 el)
+    → section.content > h4
+  ✗ link-name [2.4.4] (3 el)
+    → a.icon-link, a.social-fb, a.social-tw
 
-Summary: 5 issues | 26 affected elements
-  Critical: 2 | Serious: 3 | Moderate: 0 | Minor: 0
+── Moderate (4 issues, 11 el) ──
+  ✗ list [1.3.1] (3 el)
+    → li.breadcrumb-item (×3)
+  ✗ tabindex [2.4.3] (2 el)
+    → div.modal, input.search
+  ✗ definition-list [1.3.1] (1 el)
+    → dl.glossary
+  ✗ duplicate-id-aria [4.1.1] (2 el)
+    → nav#nav-main (×2)
 ```
+
+**What the compact header tells you at a glance:**
+- `88/100` — accessibility score
+- `9 issues` — total failed audits
+- `2c 3s 4m` — 2 critical, 3 serious, 4 moderate (impact shorthand)
+
+**Tiered detail:** Critical and serious issues show up to 5 affected elements each (these are the ones you need to fix first). Moderate and minor show up to 3 (enough to understand the pattern without burning context).
 
 ### `get_status`
 
@@ -330,46 +338,49 @@ From Claude Code or Cursor, just ask naturally:
 
 ## Compression strategy
 
-This is the central design feature. Every tool response must be small enough that Claude retains room to reason and act.
+The central design principle: **zero tokens on passes, maximum detail on failures.**
+
+Every tool response must be small enough that Claude retains room to reason and act. A raw Lighthouse report is ~2MB / ~500K tokens. LightCap compresses that to ~30-1,200 tokens depending on the number of failures.
 
 ### Context window impact
 
-| Response type | Estimated lines | Tokens (~) | Comparable to |
-|---------------|----------------|------------|---------------|
-| Score summary (4 categories) | ~10 | ~150 | One short paragraph |
-| Accessibility audit (top issues) | ~80-120 | ~1,500 | 2 viewcap tiles |
-| Full audit (all categories, top issues) | ~150-200 | ~2,500 | 3 viewcap tiles |
-| Detailed single issue with affected elements | ~20-30 | ~400 | Half a viewcap tile |
-| Raw Lighthouse JSON (NEVER returned) | ~60,000 | ~500,000 | Would destroy context |
+| Scenario | Lines | Tokens (~) | vs. Raw JSON |
+|----------|-------|------------|-------------|
+| Clean page (no failures) | 1-2 | ~30 | 99.99% smaller |
+| Page with 5 failures | ~15-25 | ~400 | 99.92% smaller |
+| Heavy failure page (20+ issues) | ~60-120 | ~1,200 | 99.76% smaller |
+| Raw Lighthouse JSON (NEVER returned) | ~60,000 | ~500,000 | — |
 
 ### How compression works
 
-Lighthouse returns hundreds of audits. The server filters and compresses:
+Lighthouse returns hundreds of audits. The compression engine applies 12 techniques:
 
-1. **Scores only:** 4 numbers (performance, accessibility, best practices, SEO) — always included
-2. **Failed audits only:** all passing audits are skipped entirely
-3. **Top N issues per category:** default 5 (run_audit) or 10 (run_a11y), configurable up to 15
-4. **Element references truncated:** CSS selectors only, no full DOM snippets — `div.hero > img` not a 40-line HTML excerpt
-5. **Descriptions summarized:** one line per issue, not Lighthouse's multi-paragraph explanations
-6. **Metrics condensed:** LCP, FID, CLS, TTFB as single-line values with pass/fail indicators
-7. **Impact grouping (a11y):** issues grouped by axe-core impact level for prioritized fixing
-8. **WCAG references:** extracted from Lighthouse's internal tags (e.g., `wcag111` → `1.1.1`)
-9. **Duplicate selectors collapsed:** `img.card (×8)` instead of listing the same selector 8 times
-10. **Hard cap:** output truncated at 200 lines with a notice to lower `maxIssues`
+1. **Failed audits only:** all passing audits are skipped entirely — zero tokens
+2. **Failing metrics only:** passing metrics are dropped completely (was: all 5 shown with ✓/✗)
+3. **Compact header:** URL, viewport, and all 4 scores on a single line: `http://localhost:3000 [desktop] Perf:72 A11y:88 BP:95 SEO:91`
+4. **Short labels:** `Perf`, `A11y`, `BP`, `SEO`, `FCP`, `LCP`, `TBT`, `CLS`, `SI` instead of full names
+5. **Top N issues per category:** default 5 (run_audit) or 10 (run_a11y), configurable up to 15
+6. **Selector deduplication:** `img.card (×8)` instead of listing `img.card` eight times — saves tokens AND provides count information
+7. **Selector truncation:** CSS selectors capped at 60 chars — `div.hero > img` not a 40-line DOM snippet
+8. **Title compression:** `displayValue` preferred over verbose `title`; long titles truncated to 60 chars
+9. **Impact grouping (a11y):** issues grouped by axe-core impact level (critical/serious/moderate/minor) with shorthand notation: `2c 3s 4m`
+10. **Tiered element detail:** critical/serious issues show up to 5 affected elements; moderate/minor show up to 3 — detail where it matters most
+11. **WCAG references:** extracted from Lighthouse's internal tags (e.g., `wcag111` → `1.1.1`)
+12. **Hard cap:** output truncated at 200 lines with a notice to lower `maxIssues`
 
 **What is never returned:** raw JSON, HTML reports, full audit trees, screenshot thumbnails, trace data, network request logs.
 
 ### Why plain text, not JSON?
 
-JSON wastes tokens on syntax (`{`, `}`, `"key":`, quotes). Plain structured text with visual separators (`═══`) is:
+JSON wastes tokens on syntax (`{`, `}`, `"key":`, quotes). Plain structured text is:
 - ~30% fewer tokens than equivalent JSON
-- Easier for Claude to scan and reference in its response
+- Easier for Claude to scan and reference
 - Still structured enough for Claude to reason about and act on
 
 ## Testing
 
 ```bash
-# Run all tests (50 tests)
+# Run all tests (57 tests)
 npm test
 
 # Run a specific test file
@@ -381,8 +392,8 @@ The test suite covers:
 - **Metadata endpoint blocking** — AWS (169.254.169.254), GCP (metadata.google.internal), Azure (metadata.azure.com)
 - **IP blocking** — localhost bypass, RFC1918 private range coverage
 - **Error message safety** — generic messages only, no internal paths or IPs leaked
-- **Compression** — score extraction, failed audit filtering, maxIssues cap, selector truncation, output line limit
-- **A11y grouping** — impact level grouping (critical/serious/moderate/minor), WCAG tag filtering, summary counts
+- **Compression** — compact header format, score extraction, failed-only audit filtering, failing-only metrics, maxIssues cap, selector truncation and deduplication, output line limit, token estimation
+- **A11y grouping** — impact level grouping (critical/serious/moderate/minor), WCAG tag filtering, compact header with impact shorthand, element counts per issue, tiered element detail (critical vs moderate)
 - **WCAG parsing** — 3-digit tags (wcag111 → 1.1.1), 4-digit tags (wcag1412 → 1.4.12)
 - **Config sanity** — all numeric limits positive, default categories non-empty, metric thresholds present
 

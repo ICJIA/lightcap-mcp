@@ -1,5 +1,54 @@
 # Changelog
 
+## 0.1.2 — 2026-04-07
+
+### Aggressive compression overhaul
+
+Redesigned the compression engine to minimize token usage while maximizing detail on failures. The principle: **zero tokens on passes, maximum detail on failures.**
+
+**Full report (`compressFullReport`) changes:**
+- Scores condensed to one line: `http://localhost:3000 [desktop] Perf:72 A11y:88 BP:95 SEO:91` — was 8 lines with padding and separators
+- Passing metrics dropped entirely — only failing metrics shown, on one compact line: `Failing metrics: LCP=4.2s CLS=0.12`
+- Metric labels shortened to standard abbreviations: FCP, LCP, TBT, CLS, SI (was full names like "Largest Contentful Paint")
+- Category labels shortened: Perf, A11y, BP, SEO (was "Performance", "Accessibility", "Best Practices", "SEO")
+- Decorative separators reduced: `──` instead of `═══...═══`
+- Selectors deduplicated in element lists: `img.card (×3)` instead of listing `img.card` three times — saves tokens AND provides count information
+- Long audit titles truncated to 60 chars; `displayValue` preferred over `title` when available
+- Clean pages (no failures) produce 1-2 lines instead of 14+ lines
+
+**Accessibility report (`compressA11yReport`) changes:**
+- Header compressed to one line with score and impact shorthand: `A11y: http://localhost:3000 [desktop] 88/100 — 5 issues (2c 3s)` — was 3 separate lines plus a separate summary block
+- Impact shorthand notation: `2c 3s 4m 1n` = 2 critical, 3 serious, 4 moderate, 1 minor
+- Element counts shown per issue: `✗ image-alt [1.1.1] (12 el)` — immediate visibility of scope
+- Tiered element detail: critical/serious issues show up to 5 affected elements, moderate/minor show up to 3 — preserves detail where it matters most
+- Skipped issues noted in section header: `── Critical (5 issues, 23 el) +3 more ──`
+- Redundant summary block removed — same information is now in the compact header
+- WCAG refs shortened: `[1.1.1]` instead of `[WCAG 1.1.1]`
+
+**Token impact estimates:**
+- Clean page (no failures): ~30 tokens (was ~200) — **85% reduction**
+- Page with 5 failures: ~400 tokens (was ~600) — **33% reduction**
+- Heavy failure page (20+ issues): ~1,200 tokens (was ~1,800) — **33% reduction**
+- Savings scale with number of passing audits/metrics — more passes = more savings
+
+**New internal utilities:**
+- `estimateTokens(text)` — rough token count (~4 chars/token) for future budget enforcement
+- `auditDisplay(audit)` — prefers `displayValue` over `title`, truncates to 60 chars
+- `metricFailing(id, value)` — boolean check replacing `metricPassFail()` (no more ✓/✗ strings)
+- Element deduplication moved from a11y-only to shared `extractElements()` — benefits both reports
+
+### Test improvements
+- 57 tests (was 50)
+- New tests: compact header format, failing-metrics-only, selector deduplication, element count display, tiered element detail for critical vs moderate, token estimation
+
+---
+
+## 0.1.1 — 2026-04-07
+
+Version bump — 0.1.0 was previously claimed on npm registry.
+
+---
+
 ## 0.1.0 — 2026-04-07
 
 ### Phase 1: Core audit + compression

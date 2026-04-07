@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { compressFullReport, compressA11yReport, _test } from '../src/compress.js';
 import { CONFIG } from '../src/config.js';
 
-const { truncateSelector, formatMetricValue, metricPassFail, parseWcagCriterion, getWcagRef } = _test;
+const { truncateSelector, formatMetricValue, metricFailing, parseWcagCriterion, getWcagRef, estimateTokens } = _test;
 
 // ─── Mock LHR factories ───────────────────────────────────────────
 
@@ -98,19 +98,33 @@ describe('formatMetricValue', () => {
   });
 });
 
-// ─── metricPassFail ────────────────────────────────────────────────
+// ─── metricFailing ─────────────────────────────────────────────────
 
-describe('metricPassFail', () => {
-  it('returns ✓ for passing metric', () => {
-    assert.equal(metricPassFail('total-blocking-time', 100), ' ✓');
+describe('metricFailing', () => {
+  it('returns false for passing metric', () => {
+    assert.equal(metricFailing('total-blocking-time', 100), false);
   });
 
-  it('returns ✗ for failing metric', () => {
-    assert.equal(metricPassFail('largest-contentful-paint', 5000), ' ✗');
+  it('returns true for failing metric', () => {
+    assert.equal(metricFailing('largest-contentful-paint', 5000), true);
   });
 
-  it('returns empty for unknown metric', () => {
-    assert.equal(metricPassFail('unknown-metric', 100), '');
+  it('returns false for unknown metric', () => {
+    assert.equal(metricFailing('unknown-metric', 100), false);
+  });
+});
+
+// ─── estimateTokens ────────────────────────────────────────────────
+
+describe('estimateTokens', () => {
+  it('estimates ~1 token per 4 chars', () => {
+    assert.equal(estimateTokens('abcd'), 1);
+    assert.equal(estimateTokens('abcde'), 2);
+    assert.equal(estimateTokens('a'.repeat(100)), 25);
+  });
+
+  it('returns 0 for empty string', () => {
+    assert.equal(estimateTokens(''), 0);
   });
 });
 
@@ -141,20 +155,23 @@ describe('parseWcagCriterion', () => {
 // ─── compressFullReport ────────────────────────────────────────────
 
 describe('compressFullReport', () => {
-  it('includes correct scores', () => {
+  it('includes all scores in compact format', () => {
     const lhr = makeLhr();
     const output = compressFullReport(lhr);
-    assert.ok(output.includes('72 / 100'));
-    assert.ok(output.includes('88 / 100'));
-    assert.ok(output.includes('95 / 100'));
-    assert.ok(output.includes('91 / 100'));
+    // New format: Perf:72 A11y:88 BP:95 SEO:91
+    assert.ok(output.includes('Perf:72'));
+    assert.ok(output.includes('A11y:88'));
+    assert.ok(output.includes('BP:95'));
+    assert.ok(output.includes('SEO:91'));
   });
 
-  it('includes URL and viewport', () => {
+  it('puts URL, viewport, and scores on one header line', () => {
     const lhr = makeLhr();
     const output = compressFullReport(lhr);
-    assert.ok(output.includes('http://localhost:3000'));
-    assert.ok(output.includes('desktop'));
+    const firstLine = output.split('\n')[0];
+    assert.ok(firstLine.includes('http://localhost:3000'));
+    assert.ok(firstLine.includes('desktop'));
+    assert.ok(firstLine.includes('Perf:'));
   });
 
   it('only includes failed audits', () => {
@@ -168,6 +185,18 @@ describe('compressFullReport', () => {
     assert.ok(output.includes('failing-audit'));
   });
 
+  it('only shows failing metrics', () => {
+    const lhr = makeLhr();
+    // Add passing and failing metrics
+    lhr.audits = {
+      'largest-contentful-paint': { numericValue: 5000 }, // fails (threshold 2500)
+      'total-blocking-time': { numericValue: 100 },       // passes (threshold 200)
+    };
+    const output = compressFullReport(lhr);
+    assert.ok(output.includes('LCP='));
+    assert.ok(!output.includes('TBT='));
+  });
+
   it('respects maxIssues cap', () => {
     const audits = Object.fromEntries(
       Array.from({ length: 20 }, (_, i) =>
@@ -176,7 +205,6 @@ describe('compressFullReport', () => {
     );
     const lhr = makeLhr({ audits });
     const output = compressFullReport(lhr, 3);
-    // Should only have 3 issues for performance
     const perfMatches = output.match(/  ✗ audit-/g);
     assert.ok(perfMatches);
     assert.ok(perfMatches.length <= 3);
@@ -193,13 +221,23 @@ describe('compressFullReport', () => {
     assert.ok(output.includes('…'));
   });
 
+  it('deduplicates selectors with count', () => {
+    const audits = Object.fromEntries([
+      makeAudit('dup-test', { score: 0.5, category: 'accessibility', items: ['img.card', 'img.card', 'img.card'] }),
+    ]);
+    const lhr = makeLhr({ audits });
+    const output = compressFullReport(lhr);
+    assert.ok(output.includes('×3'));
+    // Should NOT have three separate "img.card" entries
+    const matches = output.match(/img\.card/g);
+    assert.equal(matches.length, 1);
+  });
+
   it('skips empty categories', () => {
     const lhr = makeLhr();
     const output = compressFullReport(lhr);
-    // No failed audits → no category issue sections
-    assert.ok(!output.includes('top 0 issues'));
-    assert.ok(!output.includes('═══ Performance'));
-    assert.ok(!output.includes('═══ Accessibility'));
+    assert.ok(!output.includes('── Perf'));
+    assert.ok(!output.includes('── A11y'));
   });
 
   it('output does not exceed MAX_OUTPUT_LINES', () => {
@@ -215,7 +253,15 @@ describe('compressFullReport', () => {
     const lhr = makeLhr({ audits });
     const output = compressFullReport(lhr, 15);
     const lineCount = output.split('\n').length;
-    assert.ok(lineCount <= CONFIG.MAX_OUTPUT_LINES + 2); // +2 for truncation message
+    assert.ok(lineCount <= CONFIG.MAX_OUTPUT_LINES + 2);
+  });
+
+  it('is more compact than before (scores on one line)', () => {
+    const lhr = makeLhr();
+    const output = compressFullReport(lhr);
+    // With no failures, should be very compact — just the header line
+    const lines = output.split('\n').filter(l => l.trim());
+    assert.ok(lines.length <= 3, `Expected ≤3 non-empty lines for clean report, got ${lines.length}`);
   });
 });
 
@@ -246,7 +292,7 @@ describe('compressA11yReport', () => {
     ]);
     const lhr = makeLhr({ audits });
     const output = compressA11yReport(lhr);
-    assert.ok(output.includes('[WCAG 1.1.1]'));
+    assert.ok(output.includes('[1.1.1]'));
   });
 
   it('wcagOnly filters to WCAG-tagged audits', () => {
@@ -260,21 +306,25 @@ describe('compressA11yReport', () => {
     assert.ok(!output.includes('no-wcag'));
   });
 
-  it('includes summary line with correct counts', () => {
+  it('compact header includes score and impact counts', () => {
     const audits = Object.fromEntries([
       makeAudit('issue-1', { score: 0, impact: 'critical', items: ['a', 'b'] }),
       makeAudit('issue-2', { score: 0.1, impact: 'serious', items: ['c'] }),
     ]);
     const lhr = makeLhr({ audits });
     const output = compressA11yReport(lhr);
-    assert.ok(output.includes('Summary:'));
-    assert.ok(output.includes('2 issues'));
+    const firstLine = output.split('\n')[0];
+    // Header should contain score, total issues, and impact shorthand
+    assert.ok(firstLine.includes('88/100'));
+    assert.ok(firstLine.includes('2 issues'));
+    assert.ok(firstLine.includes('1c'));  // 1 critical
+    assert.ok(firstLine.includes('1s'));  // 1 serious
   });
 
-  it('includes score', () => {
+  it('includes score in header', () => {
     const lhr = makeLhr({ scores: { accessibility: 0.76 } });
     const output = compressA11yReport(lhr);
-    assert.ok(output.includes('Score: 76 / 100'));
+    assert.ok(output.includes('76/100'));
   });
 
   it('counts duplicate selectors with ×', () => {
@@ -284,5 +334,31 @@ describe('compressA11yReport', () => {
     const lhr = makeLhr({ audits });
     const output = compressA11yReport(lhr);
     assert.ok(output.includes('×3'));
+  });
+
+  it('shows element counts per issue', () => {
+    const audits = Object.fromEntries([
+      makeAudit('multi-el', { score: 0, impact: 'critical', items: ['a', 'b', 'c'] }),
+    ]);
+    const lhr = makeLhr({ audits });
+    const output = compressA11yReport(lhr);
+    assert.ok(output.includes('(3 el)'));
+  });
+
+  it('shows fewer elements for moderate/minor than critical/serious', () => {
+    const items = Array.from({ length: 10 }, (_, i) => `div.el-${i}`);
+    const audits = Object.fromEntries([
+      makeAudit('crit', { score: 0, impact: 'critical', items }),
+      makeAudit('mod', { score: 0.5, impact: 'moderate', items }),
+    ]);
+    const lhr = makeLhr({ audits });
+    const output = compressA11yReport(lhr);
+    // Critical section should show more → lines than moderate section
+    const sections = output.split('──');
+    const critSection = sections.find(s => s.includes('Critical')) || '';
+    const modSection = sections.find(s => s.includes('Moderate')) || '';
+    const critArrows = (critSection.match(/→/g) || []).length;
+    const modArrows = (modSection.match(/→/g) || []).length;
+    assert.ok(critArrows >= modArrows, `Critical (${critArrows} elements) should show >= Moderate (${modArrows} elements)`);
   });
 });
