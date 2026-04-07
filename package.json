@@ -1,6 +1,6 @@
 {
   "name": "@icjia/lightcap",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "MCP Lighthouse audit server for Claude Code — compressed, actionable reports optimized for Claude's context window",
   "type": "module",
   "main": "src/server.js",
