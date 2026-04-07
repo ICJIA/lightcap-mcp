@@ -1,12 +1,31 @@
 import { CONFIG, log } from './config.js';
 
+// ─── Sanitization ─────────────────────────────────────────────────
+
+// Strip control chars and newlines from page-controlled strings to prevent
+// prompt injection via crafted selectors, titles, or explanations.
+function sanitize(str) {
+  if (!str || typeof str !== 'string') return '';
+  // Remove control characters (C0/C1), newlines, and zero-width chars
+  return str.replace(/[\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028\u2029\ufeff]/g, '');
+}
+
 // ─── Helpers ───────────────────────────────────────────────────────
 
 function truncateSelector(selector) {
   if (!selector || typeof selector !== 'string') return null;
-  return selector.length > CONFIG.SELECTOR_MAX_LENGTH
-    ? selector.slice(0, CONFIG.SELECTOR_MAX_LENGTH) + '…'
-    : selector;
+  const clean = sanitize(selector);
+  return clean.length > CONFIG.SELECTOR_MAX_LENGTH
+    ? clean.slice(0, CONFIG.SELECTOR_MAX_LENGTH) + '…'
+    : clean;
+}
+
+function truncateExplanation(explanation) {
+  if (!explanation || typeof explanation !== 'string') return null;
+  const clean = sanitize(explanation);
+  return clean.length > CONFIG.EXPLANATION_MAX_LENGTH
+    ? clean.slice(0, CONFIG.EXPLANATION_MAX_LENGTH) + '…'
+    : clean;
 }
 
 function formatMetricValue(id, numericValue) {
@@ -80,10 +99,9 @@ function formatElementList(elements) {
 
 // Shorten verbose audit titles — use displayValue if available, else compact the title
 function auditDisplay(audit) {
-  if (audit.displayValue) return audit.displayValue;
-  // Truncate long titles to save tokens
-  const title = audit.title;
-  return title.length > 60 ? title.slice(0, 57) + '...' : title;
+  const raw = audit.displayValue || audit.title || audit.id;
+  const clean = sanitize(raw);
+  return clean.length > 60 ? clean.slice(0, 57) + '...' : clean;
 }
 
 // Estimate tokens: ~4 chars per token for English text
@@ -155,14 +173,26 @@ export function compressFullReport(lhr, maxIssues = CONFIG.MAX_ISSUES_DEFAULT) {
     }
   }
 
-  // Truncate if too long
+  return truncateOutput(lines);
+}
+
+// ─── Output truncation (lines + chars) ─────────────────────────────
+
+function truncateOutput(lines) {
+  // Line-count truncation
   if (lines.length > CONFIG.MAX_OUTPUT_LINES) {
-    const truncated = lines.slice(0, CONFIG.MAX_OUTPUT_LINES);
-    truncated.push('(truncated — lower maxIssues for more detail)');
-    return truncated.join('\n');
+    lines = lines.slice(0, CONFIG.MAX_OUTPUT_LINES);
+    lines.push('(truncated — lower maxIssues for more detail)');
   }
 
-  return lines.join('\n');
+  // Char-budget truncation (defense against long individual lines)
+  let result = lines.join('\n');
+  if (result.length > CONFIG.MAX_OUTPUT_CHARS) {
+    result = result.slice(0, CONFIG.MAX_OUTPUT_CHARS);
+    result += '\n(truncated — output exceeded character budget)';
+  }
+
+  return result;
 }
 
 // ─── Accessibility Report Compression ──────────────────────────────
@@ -231,9 +261,9 @@ function extractA11yElements(audit) {
 
     selectorCounts.set(sel, (selectorCounts.get(sel) || 0) + 1);
 
-    // For color-contrast, capture the explanation
+    // For color-contrast, capture the explanation (truncated)
     if (!selectorDetails.has(sel) && item.node?.explanation) {
-      selectorDetails.set(sel, item.node.explanation);
+      selectorDetails.set(sel, truncateExplanation(item.node.explanation));
     }
   }
 
@@ -340,20 +370,15 @@ export function compressA11yReport(lhr, maxIssues = CONFIG.MAX_ISSUES_A11Y_DEFAU
     lines.push(...issueLines);
   }
 
-  // Truncate if too long
-  if (lines.length > CONFIG.MAX_OUTPUT_LINES) {
-    const truncated = lines.slice(0, CONFIG.MAX_OUTPUT_LINES);
-    truncated.push('(truncated — lower maxIssues for more detail)');
-    return truncated.join('\n');
-  }
-
-  return lines.join('\n');
+  return truncateOutput(lines);
 }
 
 // ─── Test-only exports ─────────────────────────────────────────────
 
 export const _test = {
+  sanitize,
   truncateSelector,
+  truncateExplanation,
   formatMetricValue,
   metricFailing,
   getFailedAudits,

@@ -6,6 +6,16 @@ import { launch } from 'chrome-launcher';
 import lighthouse from 'lighthouse';
 import { CONFIG, log } from './config.js';
 
+// ─── Request Serialization ────────────────────────────────────────
+
+let inFlight = 0;
+let queue = Promise.resolve();
+
+function enqueue(fn) {
+  queue = queue.then(() => fn(), () => fn());
+  return queue;
+}
+
 // ─── URL Validation ────────────────────────────────────────────────
 
 async function isBlockedIp(hostname) {
@@ -13,7 +23,9 @@ async function isBlockedIp(hostname) {
 
   try {
     const { address } = await lookup(hostname);
-    return CONFIG.BLOCKED_IP_PREFIXES.some(prefix => address.startsWith(prefix));
+    // Normalize IPv6-mapped IPv4: ::ffff:1.2.3.4 → 1.2.3.4
+    const normalized = address.startsWith('::ffff:') ? address.slice(7) : address;
+    return CONFIG.BLOCKED_IP_PREFIXES.some(prefix => normalized.startsWith(prefix));
   } catch {
     // DNS resolution failed — fail closed (block the request)
     return true;
@@ -78,13 +90,70 @@ function validateOutputDir(dir) {
   return real;
 }
 
+// ─── Sanitize error messages ───────────────────────────────────────
+
+const KNOWN_ERRORS = [
+  'Blocked URL scheme',
+  'Blocked URL',
+  'Output directory is outside allowed paths',
+  'Lighthouse audit timed out',
+  'Audit queue full',
+];
+
+function sanitizeError(err) {
+  const msg = err.message || 'Unknown error';
+  // Pass through known safe error messages
+  if (KNOWN_ERRORS.some(known => msg.startsWith(known))) return msg;
+  // Lighthouse/Chrome errors: strip paths and return generic message
+  if (msg.includes('ECONNREFUSED') || msg.includes('ERR_CONNECTION_REFUSED')) {
+    return 'Could not connect to URL';
+  }
+  if (msg.includes('ETIMEOUT') || msg.includes('ERR_TIMED_OUT')) {
+    return 'Connection timed out';
+  }
+  if (msg.includes('ERR_NAME_NOT_RESOLVED')) {
+    return 'Could not resolve hostname';
+  }
+  if (msg.includes('Invalid URL')) {
+    return 'Invalid URL';
+  }
+  // Generic fallback — never leak internal details
+  log('error', `Unhandled error: ${msg}`);
+  return 'Audit failed';
+}
+
+// ─── Chrome kill with force fallback ───────────────────────────────
+
+async function killChrome(chrome) {
+  try {
+    await chrome.kill();
+  } catch {
+    // kill() failed — try SIGKILL via the PID
+    try {
+      if (chrome.pid) process.kill(chrome.pid, 'SIGKILL');
+    } catch { /* already dead */ }
+  }
+}
+
 // ─── Lighthouse Execution ──────────────────────────────────────────
 
-export async function runLighthouse(url, options = {}) {
+async function _runLighthouse(url, options = {}) {
   const validatedUrl = await validateUrl(url);
 
-  const categories = options.categories || CONFIG.DEFAULT_CATEGORIES;
+  // Validate categories against allowed set
+  const validCategories = new Set(CONFIG.DEFAULT_CATEGORIES);
+  const categories = (options.categories || CONFIG.DEFAULT_CATEGORIES)
+    .filter(c => validCategories.has(c));
+  if (categories.length === 0) {
+    throw new Error('No valid categories specified');
+  }
+
   const viewport = options.viewport || CONFIG.DEFAULT_VIEWPORT;
+
+  if (inFlight >= CONFIG.MAX_CONCURRENT_AUDITS) {
+    throw new Error('Audit queue full — try again shortly');
+  }
+  inFlight++;
 
   const chrome = await launch({
     chromeFlags: [
@@ -94,6 +163,10 @@ export async function runLighthouse(url, options = {}) {
       '--disable-extensions',
       '--disable-background-networking',
       '--no-first-run',
+      '--disable-default-apps',
+      '--disable-sync',
+      '--disable-translate',
+      '--no-default-browser-check',
       // Platform-specific sandbox
       ...(process.platform === 'linux' ? ['--no-sandbox', '--disable-setuid-sandbox'] : []),
     ],
@@ -117,7 +190,6 @@ export async function runLighthouse(url, options = {}) {
           ? { mobile: true, width: 375, height: 812, deviceScaleFactor: 2 }
           : { mobile: false, width: 1350, height: 940, deviceScaleFactor: 1 },
         // Desktop: throttling disabled for localhost accuracy.
-        // Performance scores will differ from Lighthouse CLI defaults (which apply simulated throttling).
         throttling: viewport === 'mobile'
           ? undefined
           : { rttMs: 0, throughputKbps: 0, cpuSlowdownMultiplier: 1, requestLatencyMs: 0, downloadThroughputKbps: 0, uploadThroughputKbps: 0 },
@@ -135,6 +207,18 @@ export async function runLighthouse(url, options = {}) {
       timeoutPromise,
     ]).finally(() => clearTimeout(timeoutId));
 
+    // Post-audit SSRF check: validate the final URL after redirects/DNS rebinding.
+    // Fail-closed: if we can't determine the final URL, reject the result.
+    const finalUrl = result.lhr?.finalDisplayedUrl || result.lhr?.finalUrl;
+    if (!finalUrl) {
+      throw new Error('Blocked URL');
+    }
+    try {
+      await validateUrl(finalUrl);
+    } catch {
+      throw new Error('Blocked URL');
+    }
+
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     log('info', `Audit completed in ${elapsed}s`);
 
@@ -151,10 +235,18 @@ export async function runLighthouse(url, options = {}) {
 
     return { lhr: result.lhr, htmlPath };
   } finally {
-    await chrome.kill();
+    inFlight--;
+    await killChrome(chrome);
   }
 }
 
+// Public entry point — serialized through queue
+export function runLighthouse(url, options) {
+  return enqueue(() => _runLighthouse(url, options));
+}
+
 // ─── Test-only exports ─────────────────────────────────────────────
+
+export { sanitizeError };
 
 export const _test = { validateUrl, validateOutputDir, isBlockedIp };

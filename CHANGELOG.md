@@ -1,5 +1,56 @@
 # Changelog
 
+## 0.1.4 — 2026-04-07
+
+### Security audit fixes
+
+Red/blue team adversarial audit identified and resolved the following:
+
+**Critical**
+- SSRF via HTTP redirects: Lighthouse follows redirects, but the redirect target was never validated. A `302` to `http://169.254.169.254/` would bypass all checks. **Fix:** Post-audit validation of `lhr.finalDisplayedUrl` against the same blocklist. Fail-closed if neither `finalDisplayedUrl` nor `finalUrl` exists.
+- SSRF via DNS rebinding: hostname resolves to safe IP during pre-audit validation, then re-resolves to a blocked IP when Chrome actually navigates. **Fix:** Same post-audit URL recheck catches this.
+
+**High**
+- SSRF gaps: `0.0.0.0`, `127.0.0.2-255`, and `[::]` bypassed all checks. `0.0.0.0` was not blocked, `127.` prefix was missing (only `127.0.0.1` was in localhost allowlist), and `::` (IPv6 unspecified) was unblocked. **Fix:** Added `127.` prefix, `0.` prefix, `::` prefix to `BLOCKED_IP_PREFIXES`. Added `0.0.0.0` to `BLOCKED_HOSTNAMES`. Added `0.0.0.0` and `[::]` to `LOCALHOST_HOSTS`.
+- IPv6-mapped IPv4 bypass: `::ffff:169.254.169.254` was not normalized before prefix checking. **Fix:** `isBlockedIp` now strips `::ffff:` prefix before checking.
+- No concurrency control: each audit spawned a full Chrome process with no limit. 20 concurrent calls = 20 Chrome processes = OOM. **Fix:** Request serialization queue (`enqueue`) + `MAX_CONCURRENT_AUDITS` (2) counter. Excess requests rejected with `'Audit queue full'`.
+- Prompt injection via page-controlled content: malicious pages could craft CSS selectors or ARIA labels containing adversarial text that gets injected into Claude's context. **Fix:** `sanitize()` strips all control characters (C0/C1), newlines, zero-width chars, and BOM from selectors, explanations, and audit titles before output.
+
+**Medium**
+- No URL length limit: Zod schema accepted arbitrary-length URL strings (memory pressure). **Fix:** `z.url().max(2048)` on both tools. `directory` parameter capped at `.max(500)`.
+- Unbounded `node.explanation` field: color-contrast explanations had no length cap (could be kilobytes). **Fix:** `truncateExplanation()` caps at `EXPLANATION_MAX_LENGTH` (120 chars) with sanitization.
+- `MAX_OUTPUT_LINES` counted lines only: a single line could be megabytes. **Fix:** Added `MAX_OUTPUT_CHARS` (50,000) as a second truncation guard in `truncateOutput()`.
+- Error message leakage: Lighthouse/Chrome errors returned verbatim, potentially containing filesystem paths and internal details. **Fix:** `sanitizeError()` allowlists known safe messages, maps common error types to generic messages, and falls back to `'Audit failed'` for unknowns.
+- Chrome zombie processes: if `chrome.kill()` failed, the process leaked. **Fix:** `killChrome()` catches kill failure and falls back to `process.kill(pid, 'SIGKILL')`.
+- Categories not validated in runner.js: the MCP Zod schema validated categories, but `runLighthouse()` accepted any strings. CLI path also unvalidated. **Fix:** `runLighthouse()` now filters categories against `CONFIG.DEFAULT_CATEGORIES` and rejects if none remain.
+
+**Low**
+- `exec()` for npm version check: used shell interpretation unnecessarily. **Fix:** Changed to `execFile('npm', [...])` in both `server.js` and `cli.js`.
+- npm version string unsanitized: malicious `.npmrc` could inject arbitrary text into `get_status` output. **Fix:** Version string validated against `/^\d+\.\d+\.\d+/` pattern; non-matching values replaced with `'unknown'`.
+- `sanitizeError` accessed via `_test` export in production code (code smell). **Fix:** Promoted to a regular named export from `runner.js`.
+
+### Test improvements (81 tests, was 57)
+- Sanitization: control char stripping, newline removal, zero-width char removal, prompt injection via newlines
+- Explanation truncation: length cap, sanitization, null handling
+- SSRF coverage: 0.0.0.0 blocking, full 127.x loopback range, 0.x range, :: prefix, all 172.16-31.x ranges
+- Error sanitization: known-safe passthrough, connection refused, timeout, DNS failure, path leakage prevention
+- Config: new constants (EXPLANATION_MAX_LENGTH, MAX_URL_LENGTH, MAX_CONCURRENT_AUDITS, MAX_OUTPUT_CHARS)
+- Char budget: output character count enforcement
+
+### What passed audit (no changes needed)
+- Directory validation: symlink-aware TOCTOU prevention already implemented correctly
+- WCAG regex: no catastrophic backtracking, properly anchored
+- clampInt: handles NaN, Infinity, negatives correctly
+- Zod enum validation: categories properly constrained at MCP layer
+
+---
+
+## 0.1.3 — 2026-04-07
+
+Version bump for npm publish with 2FA.
+
+---
+
 ## 0.1.2 — 2026-04-07
 
 ### Aggressive compression overhaul

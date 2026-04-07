@@ -380,7 +380,7 @@ JSON wastes tokens on syntax (`{`, `}`, `"key":`, quotes). Plain structured text
 ## Testing
 
 ```bash
-# Run all tests (57 tests)
+# Run all tests (81 tests)
 npm test
 
 # Run a specific test file
@@ -388,14 +388,16 @@ node --test test/url-validation.test.js
 ```
 
 The test suite covers:
-- **URL validation** — scheme whitelist (http/https only), blocking of file:/data:/javascript:/ftp: schemes
+- **URL validation** — scheme whitelist, blocking of file:/data:/javascript:/ftp: schemes, 0.0.0.0 blocking
 - **Metadata endpoint blocking** — AWS (169.254.169.254), GCP (metadata.google.internal), Azure (metadata.azure.com)
-- **IP blocking** — localhost bypass, RFC1918 private range coverage
-- **Error message safety** — generic messages only, no internal paths or IPs leaked
-- **Compression** — compact header format, score extraction, failed-only audit filtering, failing-only metrics, maxIssues cap, selector truncation and deduplication, output line limit, token estimation
-- **A11y grouping** — impact level grouping (critical/serious/moderate/minor), WCAG tag filtering, compact header with impact shorthand, element counts per issue, tiered element detail (critical vs moderate)
+- **IP blocking** — localhost bypass, full 127.x loopback range, 0.x range, :: prefix, all RFC1918 172.16-31.x ranges
+- **Sanitization** — control char stripping, newline removal, zero-width char removal, prompt injection via newlines
+- **Explanation truncation** — length cap at 120 chars, sanitization, null handling
+- **Error sanitization** — known-safe passthrough, connection refused/timeout/DNS mapping, path leakage prevention
+- **Compression** — compact header format, score extraction, failed-only filtering, failing-only metrics, maxIssues cap, selector truncation/deduplication, output line + char limits, token estimation
+- **A11y grouping** — impact level grouping, WCAG tag filtering, compact header with impact shorthand, element counts, tiered element detail
 - **WCAG parsing** — 3-digit tags (wcag111 → 1.1.1), 4-digit tags (wcag1412 → 1.4.12)
-- **Config sanity** — all numeric limits positive, default categories non-empty, metric thresholds present
+- **Config sanity** — all numeric limits positive, default categories, metric thresholds, new security constants
 
 ## Local development
 
@@ -475,13 +477,24 @@ src/
 
 LightCap runs locally over stdio — no network listener, no ports, no remote attack surface. Security mitigations focus on preventing misuse through prompt injection.
 
+An adversarial red/blue team audit was conducted after the initial release. All critical and high findings were fixed in v0.1.4. See [CHANGELOG.md](CHANGELOG.md) for the full list.
+
 ### SSRF prevention
 
 - **Scheme whitelist:** Only `http:` and `https:` URLs are allowed. `file://`, `data:`, `javascript:`, `ftp://`, and all other schemes are blocked.
-- **Metadata endpoint blocklist:** AWS (`169.254.169.254`), GCP (`metadata.google.internal`), and Azure (`metadata.azure.com`) metadata endpoints are blocked.
-- **Private IP range blocklist:** All RFC1918 private ranges (`10.x`, `172.16-31.x`, `192.168.x`), IPv4 link-local (`169.254.x`), and IPv6 link-local/unique-local (`fe80:`, `fd00:`) are blocked. This prevents reaching internal network services via alternate IP encodings.
+- **Metadata endpoint blocklist:** AWS (`169.254.169.254`), GCP (`metadata.google.internal`), Azure (`metadata.azure.com`), and `0.0.0.0` are blocked by hostname.
+- **Private IP range blocklist:** All RFC1918 private ranges (`10.x`, `172.16-31.x`, `192.168.x`), full loopback range (`127.x`), "this network" range (`0.x`), IPv4 link-local (`169.254.x`), IPv6 link-local (`fe80:`), IPv6 unique-local (`fd00:`), and IPv6 unspecified/loopback (`::`) are blocked.
+- **IPv6-mapped IPv4 normalization:** Addresses like `::ffff:169.254.169.254` are normalized before prefix checking.
 - **IP resolution:** Hostnames are resolved to IP addresses and checked against blocked ranges, catching hex IPs, octal IPs, IPv6-mapped addresses, and DNS wildcard services.
-- **Fail-closed DNS:** If hostname resolution fails, the request is blocked (not allowed). This prevents DNS poisoning or resolution failures from bypassing IP checks.
+- **Fail-closed DNS:** If hostname resolution fails, the request is blocked (not allowed).
+- **Post-audit URL recheck:** After Lighthouse completes, `lhr.finalDisplayedUrl` is validated against the same blocklist — catches HTTP redirect chains and DNS rebinding attacks. Fail-closed: if the final URL cannot be determined, the result is rejected.
+
+### Prompt injection prevention
+
+- **Output sanitization:** All page-controlled content (CSS selectors, audit titles, explanations) is stripped of control characters (C0/C1), newlines, zero-width chars, and BOM before being included in output. This prevents malicious pages from injecting adversarial instructions into Claude's context.
+- **Explanation truncation:** `node.explanation` strings (e.g., color-contrast details) are capped at 120 characters.
+- **Selector truncation:** CSS selectors are capped at 60 characters.
+- **Character budget:** Total output is capped at 50,000 characters (in addition to the 200-line cap) to prevent long individual lines from inflating token usage.
 
 ### Directory traversal prevention
 
@@ -491,24 +504,31 @@ LightCap runs locally over stdio — no network listener, no ports, no remote at
 
 ### Error message safety
 
-- Error messages returned to the AI are generic (e.g., "Blocked URL scheme", "Blocked URL") and never include internal paths, IPs, or stack traces.
+- Error messages returned to the AI are sanitized through an allowlist. Known safe messages pass through; common error types (connection refused, timeout, DNS failure) are mapped to generic messages; unknown errors return `'Audit failed'` with details logged to stderr only.
 - External URL logging writes hostname only (not full URL) to stderr, preventing token leakage from query parameters.
 
 ### Resource limits
 
 | Resource | Limit | Enforced By |
 |----------|-------|-------------|
+| Concurrent audits | 2 max | runner.js (queue + counter) |
 | Lighthouse audit timeout | 60s | runner.js (Promise.race + clearTimeout) |
 | Page navigation timeout | 30s | Lighthouse maxWaitForLoad flag |
+| URL length | 2048 chars | Zod schema |
+| Directory path length | 500 chars | Zod schema |
 | Issues per category | 15 max | Zod schema + compress.js |
 | Elements per issue | 5 shown | compress.js (remainder counted) |
-| Selector length | 60 chars | compress.js (truncated with …) |
+| Selector length | 60 chars | compress.js (sanitized + truncated) |
+| Explanation length | 120 chars | compress.js (sanitized + truncated) |
 | Output lines | 200 max | compress.js (truncated with notice) |
-| Chrome process | killed in finally | runner.js |
+| Output characters | 50,000 max | compress.js (truncated with notice) |
+| Chrome process | killed in finally (SIGKILL fallback) | runner.js |
 
 ### Input validation
 
-All MCP tool parameters are validated by Zod schemas with enforced min/max bounds. The CLI validates numeric inputs with bounds checking (`clampInt`) to prevent out-of-range values.
+- **MCP path:** All parameters validated by Zod schemas with enforced min/max bounds. URLs validated with `z.url().max(2048)`. Categories constrained to enum. `maxIssues` capped at 15. Directory paths capped at 500 chars.
+- **CLI path:** Numeric inputs validated with bounds checking (`clampInt`). Categories filtered against allowed set in `runLighthouse()`.
+- **Request serialization:** Audits are serialized through a shared async queue, preventing concurrent Chrome process collisions.
 
 ### No raw data exposure
 

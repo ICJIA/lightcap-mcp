@@ -2,7 +2,7 @@
 
 import { program } from 'commander';
 import { readFileSync } from 'fs';
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { runLighthouse } from './runner.js';
 import { compressFullReport, compressA11yReport } from './compress.js';
 import { CONFIG, setVerbosity } from './config.js';
@@ -104,9 +104,12 @@ program
     let latestVersion = 'unknown';
     try {
       latestVersion = await new Promise((resolve, reject) => {
-        exec('npm view lighthouse version', { timeout: 5000 }, (err, stdout) => {
+        execFile('npm', ['view', 'lighthouse', 'version'], { timeout: 5000 }, (err, stdout) => {
           if (err) reject(err);
-          else resolve(stdout.trim());
+          else {
+            const raw = stdout.trim();
+            resolve(/^\d+\.\d+\.\d+/.test(raw) ? raw : 'unknown');
+          }
         });
       });
     } catch { /* ignore */ }

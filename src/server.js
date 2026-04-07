@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 
 import { readFileSync } from 'fs';
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { McpServer, StdioServerTransport } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
-import { runLighthouse } from './runner.js';
+import { runLighthouse, sanitizeError } from './runner.js';
 import { compressFullReport, compressA11yReport } from './compress.js';
-import { setVerbosity, log } from './config.js';
+import { CONFIG, setVerbosity, log } from './config.js';
 
 if (process.argv.includes('--verbose')) setVerbosity('verbose');
 if (process.argv.includes('--quiet')) setVerbosity('quiet');
@@ -23,11 +23,13 @@ try {
 } catch { /* ignore */ }
 
 // Kick off npm registry check at startup (non-blocking).
-// By the time get_status is called, this will likely have resolved.
+// Use execFile to avoid shell interpretation.
 let _latestLhVersion = null;
 const _latestLhPromise = new Promise((resolve) => {
-  exec('npm view lighthouse version', { timeout: 5000 }, (err, stdout) => {
-    _latestLhVersion = err ? 'unknown' : stdout.trim();
+  execFile('npm', ['view', 'lighthouse', 'version'], { timeout: 5000 }, (err, stdout) => {
+    const raw = err ? 'unknown' : stdout.trim();
+    // Sanitize: only accept semver-shaped strings
+    _latestLhVersion = /^\d+\.\d+\.\d+/.test(raw) ? raw : 'unknown';
     resolve(_latestLhVersion);
   });
 });
@@ -53,11 +55,11 @@ server.registerTool(
   {
     description: 'Run a full Lighthouse audit on a web page. Returns compressed scores and top issues optimized for Claude\'s context window. Categories: performance, accessibility, best-practices, seo.',
     inputSchema: z.object({
-      url: z.string().describe('HTTP or HTTPS URL to audit'),
+      url: z.url().max(CONFIG.MAX_URL_LENGTH).describe('HTTP or HTTPS URL to audit'),
       categories: z.array(z.enum(['performance', 'accessibility', 'best-practices', 'seo'])).optional().describe('Which categories to audit (default: all 4)'),
       maxIssues: z.number().int().min(1).max(15).optional().describe('Top N failed audits per category (default 5, max 15)'),
       viewport: z.enum(['desktop', 'mobile']).optional().describe('Viewport emulation (default: desktop)'),
-      directory: z.string().optional().describe('Save full HTML report to this directory'),
+      directory: z.string().max(500).optional().describe('Save full HTML report to this directory'),
     }),
   },
   async (params) => {
@@ -77,7 +79,7 @@ server.registerTool(
       return { content: [{ type: 'text', text }] };
     } catch (err) {
       log('error', err.message);
-      return { content: [{ type: 'text', text: `Error: ${err.message}` }] };
+      return { content: [{ type: 'text', text: `Error: ${sanitizeError(err)}` }] };
     }
   }
 );
@@ -89,11 +91,11 @@ server.registerTool(
   {
     description: 'Run an accessibility-only Lighthouse audit. Faster than full audit (~5s vs ~20s). Returns issues grouped by impact (critical/serious/moderate/minor) with WCAG criteria and CSS selectors.',
     inputSchema: z.object({
-      url: z.string().describe('HTTP or HTTPS URL to audit'),
+      url: z.url().max(CONFIG.MAX_URL_LENGTH).describe('HTTP or HTTPS URL to audit'),
       maxIssues: z.number().int().min(1).max(15).optional().describe('Top N failed audits per impact group (default 10, max 15)'),
       viewport: z.enum(['desktop', 'mobile']).optional().describe('Viewport emulation (default: desktop)'),
       wcagOnly: z.boolean().optional().describe('If true, only return issues with WCAG tags'),
-      directory: z.string().optional().describe('Save full HTML report to this directory'),
+      directory: z.string().max(500).optional().describe('Save full HTML report to this directory'),
     }),
   },
   async (params) => {
@@ -113,7 +115,7 @@ server.registerTool(
       return { content: [{ type: 'text', text }] };
     } catch (err) {
       log('error', err.message);
-      return { content: [{ type: 'text', text: `Error: ${err.message}` }] };
+      return { content: [{ type: 'text', text: `Error: ${sanitizeError(err)}` }] };
     }
   }
 );
@@ -144,7 +146,7 @@ server.registerTool(
       return { content: [{ type: 'text', text }] };
     } catch (err) {
       log('error', err.message);
-      return { content: [{ type: 'text', text: `Error: ${err.message}` }] };
+      return { content: [{ type: 'text', text: `Error: ${sanitizeError(err)}` }] };
     }
   }
 );
