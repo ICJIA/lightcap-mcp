@@ -138,6 +138,10 @@ describe('truncateSelector', () => {
     assert.equal(truncateSelector(null), null);
     assert.equal(truncateSelector(undefined), null);
   });
+
+  it('returns null for all-control-char selectors', () => {
+    assert.equal(truncateSelector('\x00\x01\x02'), null);
+  });
 });
 
 // ─── formatMetricValue ─────────────────────────────────────────────
@@ -153,6 +157,14 @@ describe('formatMetricValue', () => {
 
   it('formats ms < 1000 as milliseconds', () => {
     assert.equal(formatMetricValue('total-blocking-time', 210), '210ms');
+  });
+
+  it('returns ? for NaN', () => {
+    assert.equal(formatMetricValue('speed-index', NaN), '?');
+  });
+
+  it('returns ? for Infinity', () => {
+    assert.equal(formatMetricValue('speed-index', Infinity), '?');
   });
 });
 

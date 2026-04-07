@@ -98,6 +98,7 @@ const KNOWN_ERRORS = [
   'Output directory is outside allowed paths',
   'Lighthouse audit timed out',
   'Audit queue full',
+  'No valid categories specified',
 ];
 
 function sanitizeError(err) {
@@ -155,22 +156,28 @@ async function _runLighthouse(url, options = {}) {
   }
   inFlight++;
 
-  const chrome = await launch({
-    chromeFlags: [
-      '--headless=new',
-      '--disable-gpu',
-      '--disable-dev-shm-usage',
-      '--disable-extensions',
-      '--disable-background-networking',
-      '--no-first-run',
-      '--disable-default-apps',
-      '--disable-sync',
-      '--disable-translate',
-      '--no-default-browser-check',
-      // Platform-specific sandbox
-      ...(process.platform === 'linux' ? ['--no-sandbox', '--disable-setuid-sandbox'] : []),
-    ],
-  });
+  let chrome;
+  try {
+    chrome = await launch({
+      chromeFlags: [
+        '--headless=new',
+        '--disable-gpu',
+        '--disable-dev-shm-usage',
+        '--disable-extensions',
+        '--disable-background-networking',
+        '--no-first-run',
+        '--disable-default-apps',
+        '--disable-sync',
+        '--disable-translate',
+        '--no-default-browser-check',
+        // Platform-specific sandbox
+        ...(process.platform === 'linux' ? ['--no-sandbox', '--disable-setuid-sandbox'] : []),
+      ],
+    });
+  } catch (err) {
+    inFlight--;
+    throw err;
+  }
 
   try {
     const startTime = Date.now();
@@ -228,9 +235,14 @@ async function _runLighthouse(url, options = {}) {
       const filename = `lighthouse-${Date.now()}.html`;
       const filePath = path.join(dir, filename);
       // HTML report is at index 1 when output is ['json', 'html']
-      fs.writeFileSync(filePath, result.report[1]);
-      log('info', `HTML report saved: ${filePath}`);
-      htmlPath = filePath;
+      const htmlReport = Array.isArray(result.report) ? result.report[1] : result.report;
+      if (!htmlReport) {
+        log('error', 'HTML report not available — skipping save');
+      } else {
+        fs.writeFileSync(filePath, htmlReport);
+        log('info', `HTML report saved: ${filePath}`);
+        htmlPath = filePath;
+      }
     }
 
     return { lhr: result.lhr, htmlPath };

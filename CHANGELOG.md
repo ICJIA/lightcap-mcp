@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.1.5 — 2026-04-07
+
+### Error checking and boundary fixes
+
+**Bugs fixed:**
+- `inFlight` counter permanently stuck after `chrome-launcher` failure: if `launch()` threw, `inFlight` was incremented but never decremented (the `finally` block was inside the `try` that starts after `launch()`). After enough launch failures, all future audits would be rejected with "Audit queue full". **Fix:** Wrapped `launch()` in its own try/catch that decrements `inFlight` on failure.
+- `result.report[1]` crash/corruption if Lighthouse returns unexpected report shape: when `directory` is set, the code assumed `result.report` was always an array. If Lighthouse returned a string instead, `report[1]` would be `undefined` and `fs.writeFileSync` would write the literal string `"undefined"` to disk. **Fix:** Guard with `Array.isArray` check, skip save and log error if HTML report unavailable.
+- `'No valid categories specified'` error not in `KNOWN_ERRORS` allowlist: this error was being swallowed by `sanitizeError()` and returned as generic `'Audit failed'`, losing a useful message. **Fix:** Added to the `KNOWN_ERRORS` allowlist.
+
+**Edge cases fixed:**
+- `truncateSelector` returned empty string `''` for selectors made entirely of control characters (e.g., `'\x00\x01\x02'`): after sanitization the string was empty but passed the initial truthy check. This produced `→ ` with nothing after the arrow in output. **Fix:** Return `null` if sanitized result is empty.
+- `formatMetricValue` produced `"NaN"` or `"Infinityms"` for non-finite metric values: if `audit.numericValue` was `NaN` or `Infinity`, the output was nonsensical. **Fix:** Guard with `typeof` + `isFinite()` check, return `'?'` for non-finite values.
+
+**Sanitization gaps closed:**
+- URL and formFactor in compressed output were not sanitized: `lhr.finalDisplayedUrl` is page-controlled (via redirect chains) and was used directly in the header line of both `compressFullReport` and `compressA11yReport`. **Fix:** Applied `sanitize()` to URL and formFactor in both report functions.
+
+### Test improvements (84 tests, was 81)
+- `formatMetricValue`: NaN and Infinity handling
+- `truncateSelector`: all-control-char input returns null
+
+---
+
 ## 0.1.4 — 2026-04-07
 
 ### Security audit fixes

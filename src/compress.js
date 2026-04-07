@@ -15,6 +15,7 @@ function sanitize(str) {
 function truncateSelector(selector) {
   if (!selector || typeof selector !== 'string') return null;
   const clean = sanitize(selector);
+  if (!clean) return null;
   return clean.length > CONFIG.SELECTOR_MAX_LENGTH
     ? clean.slice(0, CONFIG.SELECTOR_MAX_LENGTH) + '…'
     : clean;
@@ -29,6 +30,7 @@ function truncateExplanation(explanation) {
 }
 
 function formatMetricValue(id, numericValue) {
+  if (typeof numericValue !== 'number' || !isFinite(numericValue)) return '?';
   if (id === 'cumulative-layout-shift') {
     return numericValue.toFixed(2);
   }
@@ -128,8 +130,8 @@ const METRIC_SHORT = {
 
 export function compressFullReport(lhr, maxIssues = CONFIG.MAX_ISSUES_DEFAULT) {
   const lines = [];
-  const url = lhr.finalDisplayedUrl || lhr.requestedUrl || lhr.finalUrl || 'unknown';
-  const formFactor = lhr.configSettings?.formFactor || 'unknown';
+  const url = sanitize(lhr.finalDisplayedUrl || lhr.requestedUrl || lhr.finalUrl || 'unknown');
+  const formFactor = sanitize(lhr.configSettings?.formFactor || 'unknown');
 
   // Header: single line with all scores
   const scoreParts = [];
@@ -281,8 +283,8 @@ function extractA11yElements(audit) {
 
 export function compressA11yReport(lhr, maxIssues = CONFIG.MAX_ISSUES_A11Y_DEFAULT, wcagOnly = false) {
   const lines = [];
-  const url = lhr.finalDisplayedUrl || lhr.requestedUrl || lhr.finalUrl || 'unknown';
-  const formFactor = lhr.configSettings?.formFactor || 'unknown';
+  const url = sanitize(lhr.finalDisplayedUrl || lhr.requestedUrl || lhr.finalUrl || 'unknown');
+  const formFactor = sanitize(lhr.configSettings?.formFactor || 'unknown');
 
   const a11yCat = lhr.categories?.accessibility;
   const score = a11yCat ? Math.round((a11yCat.score ?? 0) * 100) : 'N/A';

@@ -380,7 +380,7 @@ JSON wastes tokens on syntax (`{`, `}`, `"key":`, quotes). Plain structured text
 ## Testing
 
 ```bash
-# Run all tests (81 tests)
+# Run all tests (84 tests)
 npm test
 
 # Run a specific test file
