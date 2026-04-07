@@ -1,0 +1,42 @@
+{
+  "name": "@icjia/lightcap",
+  "version": "0.1.0",
+  "description": "MCP Lighthouse audit server for Claude Code — compressed, actionable reports optimized for Claude's context window",
+  "type": "module",
+  "main": "src/server.js",
+  "bin": {
+    "lightcap": "src/cli.js"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test test/*.test.js"
+  },
+  "files": [
+    "src/",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "mcp",
+    "lighthouse",
+    "accessibility",
+    "audit",
+    "claude",
+    "wcag"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ICJIA/lightcap-mcp.git"
+  },
+  "dependencies": {
+    "@cfworker/json-schema": "^4.1.1",
+    "@modelcontextprotocol/server": "^2.0.0-alpha.2",
+    "chrome-launcher": "^1.2.1",
+    "commander": "^14.0.3",
+    "lighthouse": "^13.1.0",
+    "zod": "^4.3.6"
+  }
+}
