@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { readFileSync } from 'fs';
+import { createRequire } from 'module';
 import { execFile } from 'child_process';
 import { McpServer, StdioServerTransport } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
@@ -18,7 +19,11 @@ const serverVersion = pkg.version;
 
 let lhVersion = 'unknown';
 try {
-  const lhPkg = JSON.parse(readFileSync(new URL('../node_modules/lighthouse/package.json', import.meta.url)));
+  // Resolve through Node's module algorithm rather than a fixed relative path:
+  // under npx/npm flat installs, lighthouse is hoisted to a parent node_modules
+  // (not ./node_modules/lighthouse), so the old '../node_modules/...' path
+  // failed there and get_status reported "vunknown".
+  const lhPkg = JSON.parse(readFileSync(createRequire(import.meta.url).resolve('lighthouse/package.json')));
   lhVersion = lhPkg.version;
 } catch { /* ignore */ }
 

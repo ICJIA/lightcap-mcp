@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.6 — 2026-06-11
+
+### Lighthouse version detection + dependency refresh
+
+**Bugs fixed:**
+- `get_status` reported `Lighthouse: vunknown` when installed via `npx`: the version was read from `new URL('../node_modules/lighthouse/package.json', import.meta.url)` — a fixed path relative to `src/` that only exists in a dev checkout. Under npx/npm **flat installs**, lighthouse is hoisted to a parent `node_modules` (e.g. `~/.npm/_npx/<hash>/node_modules/lighthouse`), so the read failed silently and the real version was hidden. **Fix:** resolve via `createRequire(import.meta.url).resolve('lighthouse/package.json')`, which follows Node's module resolution in both layouts. (Found in the field: this masked a cached lighthouse@13.1.0 running one minor behind — see below.)
+
+**Dependencies:**
+- lighthouse `^13.1.0` → `^13.4.0` (axe-core 4.11.2 → 4.12.1). Lighthouse 13.2 enabled additional axe accessibility audits in the default config (73 → 76 audits, including `presentation-role-conflict`), so 13.1-based runs could report a11y 100 on pages that current Chrome DevTools / PageSpeed Insights score below 100. Note for existing installs: `npx -y @icjia/lightcap` caches the dependency tree at first use — clear the npx cache (or pin `@icjia/lightcap@latest`) to pick up the new Lighthouse.
+
+**Known audit-methodology caveat (documented, not a lightcap bug):** like any fresh-profile Lighthouse run, lightcap audits the page's first-visit state. Sites that auto-open a dialog on first visit (cookie banners, welcome/tour modals) render their main UI inert behind it, so axe never evaluates those elements. Audit such pages in their post-dismiss state as well (e.g. a Playwright + axe harness, or a browser session that has dismissed the dialog).
+
+---
+
 ## 0.1.5 — 2026-04-07
 
 ### Error checking and boundary fixes
