@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.7 — 2026-07-01
+
+### Fix: server failed to start under `npx` (MCP SDK prerelease drift)
+
+**Bug fixed:** `npx -y @icjia/lightcap` crashed on startup with `SyntaxError: The requested module '@modelcontextprotocol/server' does not provide an export named 'StdioServerTransport'`, surfacing in Claude Code as `Failed to reconnect to lightcap: -32000`. The dependency was pinned with a caret on a **prerelease** — `"@modelcontextprotocol/server": "^2.0.0-alpha.2"` — and the published tarball ships no lockfile, so every fresh `npx` install re-resolved that range to the newest matching prerelease. `2.0.0-alpha.3` relocated `StdioServerTransport` from the package root to the `@modelcontextprotocol/server/stdio` subpath and removed it from `.`, so `src/server.js`'s root import stopped resolving. Dev checkouts were unaffected because `package-lock.json` still pinned `alpha.2`. (Not a Lighthouse issue — Lighthouse 13.4.0 resolved correctly in both layouts.) **Fix:** pin the SDK to exactly `2.0.0-alpha.2` (drop the caret; never range a prerelease). Existing npx installs must clear the cache to pick this up: `rm -rf ~/.npm/_npx`.
+
+---
+
 ## 0.1.6 — 2026-06-11
 
 ### Lighthouse version detection + dependency refresh
