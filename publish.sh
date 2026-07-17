@@ -107,9 +107,11 @@ fi
 echo ""
 
 if [[ "$DRY_RUN" == true ]]; then
-  # Revert the version bump since we're not publishing
+  # Revert the version bump since we're not publishing.
+  # npm version updates package-lock.json too — revert both, or the
+  # leftover lockfile change trips the clean-tree check on the real run.
   if [[ "$FIRST_TIME" == false ]]; then
-    git checkout package.json
+    git checkout package.json package-lock.json
   fi
   info "Dry run complete. No changes made."
   exit 0
@@ -127,9 +129,9 @@ read -p "Proceed? (y/N) " -n 1 -r
 echo ""
 
 if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-  # Revert the version bump
+  # Revert the version bump (package-lock.json changes too)
   if [[ "$FIRST_TIME" == false ]]; then
-    git checkout package.json
+    git checkout package.json package-lock.json
   fi
   info "Aborted. No changes made."
   exit 0
