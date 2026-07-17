@@ -114,31 +114,33 @@ describe('isBlockedIp', () => {
     assert.equal(await isBlockedIp('::1'), false);
   });
 
-  it('allows 0.0.0.0 (in LOCALHOST_HOSTS)', async () => {
-    assert.equal(await isBlockedIp('0.0.0.0'), false);
+  it('blocks 0.0.0.0 (unspecified address, no longer allowlisted)', async () => {
+    assert.equal(await isBlockedIp('0.0.0.0'), true);
   });
 });
 
-describe('BLOCKED_IP_PREFIXES coverage', async () => {
+describe('BLOCKED_IP_RANGES coverage', async () => {
   const { CONFIG } = await import('../src/config.js');
-  const prefixes = CONFIG.BLOCKED_IP_PREFIXES;
+  const ranges = CONFIG.BLOCKED_IP_RANGES.map(([addr, prefix]) => `${addr}/${prefix}`);
 
-  it('blocks full 127.x.x.x loopback range', () => {
-    assert.ok(prefixes.includes('127.'));
+  it('blocks full loopback and unspecified ranges', () => {
+    assert.ok(ranges.includes('127.0.0.0/8'));
+    assert.ok(ranges.includes('0.0.0.0/8'));
+    assert.ok(ranges.includes('::/128'));
+    assert.ok(ranges.includes('::1/128'));
   });
 
-  it('blocks 0.x.x.x range', () => {
-    assert.ok(prefixes.includes('0.'));
+  it('blocks RFC1918 as proper CIDR ranges', () => {
+    assert.ok(ranges.includes('10.0.0.0/8'));
+    assert.ok(ranges.includes('172.16.0.0/12'));
+    assert.ok(ranges.includes('192.168.0.0/16'));
   });
 
-  it('blocks :: (IPv6 unspecified/loopback)', () => {
-    assert.ok(prefixes.includes('::'));
-  });
-
-  it('blocks all RFC1918 172.16-31.x ranges', () => {
-    for (let i = 16; i <= 31; i++) {
-      assert.ok(prefixes.includes(`172.${i}.`), `Missing 172.${i}.`);
-    }
+  it('blocks link-local, CGNAT, and IPv6 unique-local', () => {
+    assert.ok(ranges.includes('169.254.0.0/16'));
+    assert.ok(ranges.includes('100.64.0.0/10'));
+    assert.ok(ranges.includes('fc00::/7'));
+    assert.ok(ranges.includes('fe80::/10'));
   });
 });
 

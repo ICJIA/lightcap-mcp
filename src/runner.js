@@ -1,31 +1,59 @@
 import path from 'path';
 import os from 'os';
 import fs from 'fs';
+import net from 'net';
+import crypto from 'crypto';
 import { lookup } from 'dns/promises';
 import { launch } from 'chrome-launcher';
 import lighthouse from 'lighthouse';
 import { CONFIG, log } from './config.js';
 
-// ─── Request Serialization ────────────────────────────────────────
+// ─── Request Queue ─────────────────────────────────────────────────
+// Audits run strictly one at a time (each spawns a full Chrome). The
+// queue bounds how many callers may wait; beyond that we reject fast
+// rather than let requests pile up past any MCP client timeout.
 
-let inFlight = 0;
-let queue = Promise.resolve();
+function createQueue(maxDepth) {
+  let pending = 0;
+  let chain = Promise.resolve();
 
-function enqueue(fn) {
-  queue = queue.then(() => fn(), () => fn());
-  return queue;
+  return {
+    run(fn) {
+      if (pending >= maxDepth) {
+        return Promise.reject(new Error('Audit queue full — try again shortly'));
+      }
+      pending++;
+      const result = chain.then(() => fn());
+      chain = result.then(() => {}, () => {});
+      return result.finally(() => { pending--; });
+    },
+  };
 }
 
+const auditQueue = createQueue(CONFIG.MAX_QUEUE_DEPTH);
+
 // ─── URL Validation ────────────────────────────────────────────────
+
+const blockList = new net.BlockList();
+for (const [address, prefix, family] of CONFIG.BLOCKED_IP_RANGES) {
+  blockList.addSubnet(address, prefix, family);
+}
 
 async function isBlockedIp(hostname) {
   if (CONFIG.LOCALHOST_HOSTS.includes(hostname)) return false;
 
   try {
-    const { address } = await lookup(hostname);
-    // Normalize IPv6-mapped IPv4: ::ffff:1.2.3.4 → 1.2.3.4
-    const normalized = address.startsWith('::ffff:') ? address.slice(7) : address;
-    return CONFIG.BLOCKED_IP_PREFIXES.some(prefix => normalized.startsWith(prefix));
+    // Check every address the hostname resolves to, not just the first —
+    // a host with one public and one private record must still be blocked.
+    const addresses = await lookup(hostname, { all: true });
+    for (const { address } of addresses) {
+      // Normalize IPv6-mapped IPv4: ::ffff:1.2.3.4 → 1.2.3.4
+      const normalized = address.startsWith('::ffff:') ? address.slice(7) : address;
+      const version = net.isIP(normalized);
+      if (version === 0) return true; // unrecognizable address — fail closed
+      if (blockList.check(normalized, version === 6 ? 'ipv6' : 'ipv4')) return true;
+    }
+    return false;
   } catch {
     // DNS resolution failed — fail closed (block the request)
     return true;
@@ -56,6 +84,11 @@ async function validateUrl(url) {
 
 // ─── Directory Validation ──────────────────────────────────────────
 
+// Path containment with a separator guard: '/tmpfoo' is NOT within '/tmp'.
+function isWithin(child, root) {
+  return child === root || child.startsWith(root + path.sep);
+}
+
 function validateOutputDir(dir) {
   const resolved = path.resolve(dir);
   const home = os.homedir();
@@ -63,7 +96,7 @@ function validateOutputDir(dir) {
   const realTmp = fs.realpathSync('/tmp');
 
   // Logical path check (fast reject for obvious violations)
-  if (!resolved.startsWith(home) && !resolved.startsWith('/tmp') && !resolved.startsWith('/private/tmp')) {
+  if (!isWithin(resolved, home) && !isWithin(resolved, '/tmp') && !isWithin(resolved, '/private/tmp')) {
     throw new Error('Output directory is outside allowed paths');
   }
 
@@ -74,7 +107,7 @@ function validateOutputDir(dir) {
     existing = path.dirname(existing);
   }
   const realExisting = fs.realpathSync(existing);
-  if (!realExisting.startsWith(realHome) && !realExisting.startsWith(realTmp)) {
+  if (!isWithin(realExisting, realHome) && !isWithin(realExisting, realTmp)) {
     throw new Error('Output directory is outside allowed paths');
   }
 
@@ -83,11 +116,36 @@ function validateOutputDir(dir) {
   const real = fs.realpathSync(resolved);
 
   // Final check on the created path (belt and suspenders)
-  if (!real.startsWith(realHome) && !real.startsWith(realTmp)) {
+  if (!isWithin(real, realHome) && !isWithin(real, realTmp)) {
     throw new Error('Output directory is outside allowed paths');
   }
 
   return real;
+}
+
+// ─── HTML report save ──────────────────────────────────────────────
+
+function saveHtmlReport(directory, html) {
+  if (!html) {
+    log('error', 'HTML report not available — skipping save');
+    return null;
+  }
+  const dir = validateOutputDir(directory);
+  // 'wx' refuses to write through a pre-existing file or symlink at the
+  // target path; the random suffix makes collisions effectively impossible.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const filename = `lighthouse-${Date.now()}-${crypto.randomBytes(3).toString('hex')}.html`;
+    const filePath = path.join(dir, filename);
+    try {
+      fs.writeFileSync(filePath, html, { flag: 'wx' });
+      log('info', `HTML report saved: ${filePath}`);
+      return filePath;
+    } catch (err) {
+      if (err.code !== 'EEXIST') throw err;
+    }
+  }
+  log('error', 'HTML report save failed — target filenames already exist');
+  return null;
 }
 
 // ─── Sanitize error messages ───────────────────────────────────────
@@ -105,6 +163,12 @@ function sanitizeError(err) {
   const msg = err.message || 'Unknown error';
   // Pass through known safe error messages
   if (KNOWN_ERRORS.some(known => msg.startsWith(known))) return msg;
+  // chrome-launcher could not find a Chrome/Chromium binary
+  if (err.code === 'ERR_LAUNCHER_PATH_NOT_SET'
+      || msg.includes('CHROME_PATH')
+      || msg.includes('No Chrome installations found')) {
+    return 'Chrome not found — install Google Chrome or set CHROME_PATH';
+  }
   // Lighthouse/Chrome errors: strip paths and return generic message
   if (msg.includes('ECONNREFUSED') || msg.includes('ERR_CONNECTION_REFUSED')) {
     return 'Could not connect to URL';
@@ -151,33 +215,22 @@ async function _runLighthouse(url, options = {}) {
 
   const viewport = options.viewport || CONFIG.DEFAULT_VIEWPORT;
 
-  if (inFlight >= CONFIG.MAX_CONCURRENT_AUDITS) {
-    throw new Error('Audit queue full — try again shortly');
-  }
-  inFlight++;
-
-  let chrome;
-  try {
-    chrome = await launch({
-      chromeFlags: [
-        '--headless=new',
-        '--disable-gpu',
-        '--disable-dev-shm-usage',
-        '--disable-extensions',
-        '--disable-background-networking',
-        '--no-first-run',
-        '--disable-default-apps',
-        '--disable-sync',
-        '--disable-translate',
-        '--no-default-browser-check',
-        // Platform-specific sandbox
-        ...(process.platform === 'linux' ? ['--no-sandbox', '--disable-setuid-sandbox'] : []),
-      ],
-    });
-  } catch (err) {
-    inFlight--;
-    throw err;
-  }
+  const chrome = await launch({
+    chromeFlags: [
+      '--headless=new',
+      '--disable-gpu',
+      '--disable-dev-shm-usage',
+      '--disable-extensions',
+      '--disable-background-networking',
+      '--no-first-run',
+      '--disable-default-apps',
+      '--disable-sync',
+      '--disable-translate',
+      '--no-default-browser-check',
+      // Platform-specific sandbox
+      ...(process.platform === 'linux' ? ['--no-sandbox', '--disable-setuid-sandbox'] : []),
+    ],
+  });
 
   try {
     const startTime = Date.now();
@@ -231,34 +284,24 @@ async function _runLighthouse(url, options = {}) {
 
     let htmlPath = null;
     if (options.directory) {
-      const dir = validateOutputDir(options.directory);
-      const filename = `lighthouse-${Date.now()}.html`;
-      const filePath = path.join(dir, filename);
       // HTML report is at index 1 when output is ['json', 'html']
       const htmlReport = Array.isArray(result.report) ? result.report[1] : result.report;
-      if (!htmlReport) {
-        log('error', 'HTML report not available — skipping save');
-      } else {
-        fs.writeFileSync(filePath, htmlReport);
-        log('info', `HTML report saved: ${filePath}`);
-        htmlPath = filePath;
-      }
+      htmlPath = saveHtmlReport(options.directory, htmlReport);
     }
 
     return { lhr: result.lhr, htmlPath };
   } finally {
-    inFlight--;
     await killChrome(chrome);
   }
 }
 
-// Public entry point — serialized through queue
+// Public entry point — serialized through the bounded queue
 export function runLighthouse(url, options) {
-  return enqueue(() => _runLighthouse(url, options));
+  return auditQueue.run(() => _runLighthouse(url, options));
 }
 
 // ─── Test-only exports ─────────────────────────────────────────────
 
 export { sanitizeError };
 
-export const _test = { validateUrl, validateOutputDir, isBlockedIp };
+export const _test = { validateUrl, validateOutputDir, isBlockedIp, isWithin, createQueue, saveHtmlReport };

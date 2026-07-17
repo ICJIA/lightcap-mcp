@@ -15,7 +15,7 @@ describe('CONFIG', () => {
     assert.ok(CONFIG.NAV_TIMEOUT > 0);
     assert.ok(CONFIG.MAX_OUTPUT_LINES > 0);
     assert.ok(CONFIG.MAX_OUTPUT_CHARS > 0);
-    assert.ok(CONFIG.MAX_CONCURRENT_AUDITS > 0);
+    assert.ok(CONFIG.MAX_QUEUE_DEPTH > 0);
   });
 
   it('MAX_ISSUES_CAP >= MAX_ISSUES_DEFAULT', () => {
@@ -42,32 +42,33 @@ describe('CONFIG', () => {
     }
   });
 
-  it('has blocked hostnames including 0.0.0.0', () => {
+  it('has blocked hostnames including 0.0.0.0 and [::]', () => {
     assert.ok(CONFIG.BLOCKED_HOSTNAMES.length > 0);
     assert.ok(CONFIG.BLOCKED_HOSTNAMES.includes('169.254.169.254'));
     assert.ok(CONFIG.BLOCKED_HOSTNAMES.includes('0.0.0.0'));
+    assert.ok(CONFIG.BLOCKED_HOSTNAMES.includes('[::]'));
   });
 
-  it('has blocked IP prefixes covering RFC1918 + loopback ranges', () => {
-    const prefixes = CONFIG.BLOCKED_IP_PREFIXES;
-    assert.ok(prefixes.includes('10.'));
-    assert.ok(prefixes.includes('192.168.'));
-    assert.ok(prefixes.includes('172.16.'));
-    assert.ok(prefixes.includes('172.31.'));
-    assert.ok(prefixes.includes('fe80:'));
-    assert.ok(prefixes.includes('fd00:'));
-    // New: full loopback and unspecified ranges
-    assert.ok(prefixes.includes('127.'));
-    assert.ok(prefixes.includes('0.'));
-    assert.ok(prefixes.includes('::'));
+  it('has well-formed blocked IP CIDR ranges', () => {
+    assert.ok(Array.isArray(CONFIG.BLOCKED_IP_RANGES));
+    assert.ok(CONFIG.BLOCKED_IP_RANGES.length > 0);
+    for (const range of CONFIG.BLOCKED_IP_RANGES) {
+      const [address, prefix, family] = range;
+      assert.equal(typeof address, 'string');
+      assert.ok(Number.isInteger(prefix) && prefix >= 1);
+      assert.ok(family === 'ipv4' || family === 'ipv6');
+      assert.ok(prefix <= (family === 'ipv4' ? 32 : 128));
+    }
   });
 
-  it('has localhost hosts including 0.0.0.0 and [::]', () => {
+  it('localhost allowlist contains only loopback hostnames', () => {
     assert.ok(CONFIG.LOCALHOST_HOSTS.includes('localhost'));
     assert.ok(CONFIG.LOCALHOST_HOSTS.includes('127.0.0.1'));
     assert.ok(CONFIG.LOCALHOST_HOSTS.includes('::1'));
-    assert.ok(CONFIG.LOCALHOST_HOSTS.includes('0.0.0.0'));
-    assert.ok(CONFIG.LOCALHOST_HOSTS.includes('[::]'));
+    assert.ok(CONFIG.LOCALHOST_HOSTS.includes('[::1]'));
+    // Unspecified addresses are blocked, not allowlisted
+    assert.ok(!CONFIG.LOCALHOST_HOSTS.includes('0.0.0.0'));
+    assert.ok(!CONFIG.LOCALHOST_HOSTS.includes('[::]'));
   });
 
   it('MAX_OUTPUT_CHARS is large enough but bounded', () => {

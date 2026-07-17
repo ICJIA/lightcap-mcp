@@ -8,7 +8,7 @@ export const CONFIG = {
   MAX_URL_LENGTH: 2048,
   AUDIT_TIMEOUT: 60_000,
   NAV_TIMEOUT: 30_000,
-  MAX_CONCURRENT_AUDITS: 2,
+  MAX_QUEUE_DEPTH: 3,
   DEFAULT_CATEGORIES: ['accessibility', 'performance', 'best-practices', 'seo'],
   DEFAULT_VIEWPORT: 'desktop',
   BLOCKED_HOSTNAMES: [
@@ -16,22 +16,24 @@ export const CONFIG = {
     'metadata.google.internal',
     'metadata.azure.com',
     '0.0.0.0',
+    '[::]',
   ],
-  BLOCKED_IP_PREFIXES: [
-    '169.254.',                // IPv4 link-local (AWS metadata)
-    '10.',                     // RFC1918 Class A private
-    '172.16.', '172.17.', '172.18.', '172.19.',  // RFC1918 Class B private
-    '172.20.', '172.21.', '172.22.', '172.23.',
-    '172.24.', '172.25.', '172.26.', '172.27.',
-    '172.28.', '172.29.', '172.30.', '172.31.',
-    '192.168.',                // RFC1918 Class C private
-    '127.',                    // Full loopback range (127.0.0.0/8)
-    '0.',                      // 0.0.0.0/8 "this network"
-    'fd00:',                   // IPv6 unique-local
-    'fe80:',                   // IPv6 link-local
-    '::',                      // IPv6 unspecified / loopback
+  // CIDR ranges checked via net.BlockList after DNS resolution.
+  // [address, prefixLength, family]
+  BLOCKED_IP_RANGES: [
+    ['0.0.0.0', 8, 'ipv4'],        // "this network" (0.0.0.0/8)
+    ['10.0.0.0', 8, 'ipv4'],       // RFC1918
+    ['100.64.0.0', 10, 'ipv4'],    // CGNAT (RFC6598)
+    ['127.0.0.0', 8, 'ipv4'],      // loopback
+    ['169.254.0.0', 16, 'ipv4'],   // link-local / cloud metadata
+    ['172.16.0.0', 12, 'ipv4'],    // RFC1918
+    ['192.168.0.0', 16, 'ipv4'],   // RFC1918
+    ['::', 128, 'ipv6'],           // unspecified
+    ['::1', 128, 'ipv6'],          // loopback
+    ['fc00::', 7, 'ipv6'],         // unique-local (fc00::/7, includes fd00::/8)
+    ['fe80::', 10, 'ipv6'],        // link-local
   ],
-  LOCALHOST_HOSTS: ['localhost', '127.0.0.1', '::1', '[::1]', '0.0.0.0', '[::]'],
+  LOCALHOST_HOSTS: ['localhost', '127.0.0.1', '::1', '[::1]'],
   METRIC_THRESHOLDS: {
     'first-contentful-paint': 1800,
     'largest-contentful-paint': 2500,

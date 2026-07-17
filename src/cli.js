@@ -1,13 +1,10 @@
 #!/usr/bin/env node
 
 import { program } from 'commander';
-import { readFileSync } from 'fs';
-import { execFile } from 'child_process';
 import { runLighthouse } from './runner.js';
 import { compressFullReport, compressA11yReport } from './compress.js';
 import { CONFIG, setVerbosity } from './config.js';
-
-const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url)));
+import { pkg, installedLighthouseVersion, latestNpmVersion, statusText } from './versions.js';
 
 program
   .name('lightcap')
@@ -95,34 +92,9 @@ program
   .action(async () => {
     applyGlobalOptions(program.opts());
 
-    let lhVersion = 'unknown';
-    try {
-      const lhPkg = JSON.parse(readFileSync(new URL('../node_modules/lighthouse/package.json', import.meta.url)));
-      lhVersion = lhPkg.version;
-    } catch { /* ignore */ }
-
-    let latestVersion = 'unknown';
-    try {
-      latestVersion = await new Promise((resolve, reject) => {
-        execFile('npm', ['view', 'lighthouse', 'version'], { timeout: 5000 }, (err, stdout) => {
-          if (err) reject(err);
-          else {
-            const raw = stdout.trim();
-            resolve(/^\d+\.\d+\.\d+/.test(raw) ? raw : 'unknown');
-          }
-        });
-      });
-    } catch { /* ignore */ }
-
-    const updateNote = (latestVersion === 'unknown' || latestVersion === lhVersion)
-      ? '(latest)'
-      : `(latest: v${latestVersion} — update available)`;
-
-    console.log('lightcap status');
-    console.log(`  Server:     @icjia/lightcap v${pkg.version}`);
-    console.log(`  Lighthouse: v${lhVersion} ${updateNote}`);
-    console.log(`  Node:       v${process.versions.node}`);
-    console.log(`  Platform:   ${process.platform} ${process.arch}`);
+    const lhVersion = installedLighthouseVersion();
+    const latestLh = await latestNpmVersion('lighthouse');
+    console.log(statusText({ serverVersion: pkg.version, lhVersion, latestLh }));
   });
 
 // Default: start MCP server (when no subcommand given)

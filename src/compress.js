@@ -12,21 +12,41 @@ function sanitize(str) {
 
 // ─── Helpers ───────────────────────────────────────────────────────
 
+function capLength(str, max) {
+  return str.length > max ? str.slice(0, max) + '…' : str;
+}
+
 function truncateSelector(selector) {
   if (!selector || typeof selector !== 'string') return null;
   const clean = sanitize(selector);
   if (!clean) return null;
-  return clean.length > CONFIG.SELECTOR_MAX_LENGTH
-    ? clean.slice(0, CONFIG.SELECTOR_MAX_LENGTH) + '…'
-    : clean;
+  return capLength(clean, CONFIG.SELECTOR_MAX_LENGTH);
 }
 
 function truncateExplanation(explanation) {
   if (!explanation || typeof explanation !== 'string') return null;
   const clean = sanitize(explanation);
-  return clean.length > CONFIG.EXPLANATION_MAX_LENGTH
-    ? clean.slice(0, CONFIG.EXPLANATION_MAX_LENGTH) + '…'
-    : clean;
+  return capLength(clean, CONFIG.EXPLANATION_MAX_LENGTH);
+}
+
+// Runtime errors (page failed to load, blocked, etc.) make scores
+// meaningless — surface them instead of reporting silent zeros.
+function runtimeErrorLines(lhr) {
+  const lines = [];
+  const re = lhr.runtimeError;
+  if (re && (re.code || re.message)) {
+    const code = sanitize(re.code || '');
+    const msg = capLength(sanitize(re.message || ''), 200);
+    lines.push(`⚠ Audit error${code ? ` (${code})` : ''}: ${msg} — results may be incomplete`);
+  }
+  if (Array.isArray(lhr.runWarnings)) {
+    for (const warning of lhr.runWarnings.slice(0, 2)) {
+      if (typeof warning === 'string' && warning) {
+        lines.push(`⚠ ${capLength(sanitize(warning), 160)}`);
+      }
+    }
+  }
+  return lines;
 }
 
 function formatMetricValue(id, numericValue) {
@@ -46,6 +66,8 @@ function metricFailing(id, numericValue) {
   return numericValue > threshold;
 }
 
+// Returns ALL failed audits (worst first) when maxIssues is omitted;
+// callers cap for display so headers can report true totals.
 function getFailedAudits(lhr, categoryId, maxIssues) {
   const category = lhr.categories?.[categoryId];
   if (!category) return [];
@@ -63,25 +85,60 @@ function getFailedAudits(lhr, categoryId, maxIssues) {
   // Sort by score ascending (worst first)
   failed.sort((a, b) => (a.score ?? 0) - (b.score ?? 0));
 
+  if (maxIssues == null) return failed;
   return failed.slice(0, Math.min(maxIssues, CONFIG.MAX_ISSUES_CAP));
+}
+
+// Perf/BP audits list resources by url rather than DOM node — label
+// them by file basename (or hostname for root URLs).
+function resourceLabel(url) {
+  if (!url || typeof url !== 'string') return null;
+  try {
+    const parsed = new URL(url);
+    const base = parsed.pathname.split('/').filter(Boolean).pop();
+    return truncateSelector(base || parsed.hostname);
+  } catch {
+    return truncateSelector(url);
+  }
+}
+
+function wasteDetail(item) {
+  if (typeof item.wastedBytes === 'number' && item.wastedBytes >= 1024) {
+    return `${Math.round(item.wastedBytes / 1024)}KB wasted`;
+  }
+  if (typeof item.wastedBytes === 'number' && item.wastedBytes > 0) {
+    return `${Math.round(item.wastedBytes)}B wasted`;
+  }
+  if (typeof item.wastedMs === 'number' && item.wastedMs >= 1) {
+    return `${Math.round(item.wastedMs)}ms`;
+  }
+  return null;
 }
 
 function extractElements(audit) {
   const items = audit.details?.items;
   if (!Array.isArray(items)) return [];
 
-  // Deduplicate selectors and count occurrences
-  const selectorCounts = new Map();
+  // Deduplicate labels, count occurrences, keep first waste detail
+  const labelCounts = new Map();
+  const labelDetails = new Map();
   for (const item of items) {
-    const sel = truncateSelector(item.node?.selector);
-    if (sel) {
-      selectorCounts.set(sel, (selectorCounts.get(sel) || 0) + 1);
+    const label = truncateSelector(item.node?.selector) || resourceLabel(item.url);
+    if (!label) continue;
+    labelCounts.set(label, (labelCounts.get(label) || 0) + 1);
+    if (!labelDetails.has(label)) {
+      const detail = wasteDetail(item);
+      if (detail) labelDetails.set(label, detail);
     }
   }
 
   const elements = [];
-  for (const [sel, count] of selectorCounts) {
-    elements.push(count > 1 ? `${sel} (×${count})` : sel);
+  for (const [label, count] of labelCounts) {
+    let line = label;
+    if (count > 1) line += ` (×${count})`;
+    const detail = labelDetails.get(label);
+    if (detail) line += ` (${detail})`;
+    elements.push(line);
   }
   return elements;
 }
@@ -133,16 +190,17 @@ export function compressFullReport(lhr, maxIssues = CONFIG.MAX_ISSUES_DEFAULT) {
   const url = sanitize(lhr.finalDisplayedUrl || lhr.requestedUrl || lhr.finalUrl || 'unknown');
   const formFactor = sanitize(lhr.configSettings?.formFactor || 'unknown');
 
-  // Header: single line with all scores
+  // Header: single line with all scores ('?' when Lighthouse could not score)
   const scoreParts = [];
   for (const catId of CONFIG.DEFAULT_CATEGORIES) {
     const cat = lhr.categories?.[catId];
     if (!cat) continue;
     const label = CATEGORY_SHORT[catId] || catId;
-    const score = Math.round((cat.score ?? 0) * 100);
+    const score = cat.score == null ? '?' : Math.round(cat.score * 100);
     scoreParts.push(`${label}:${score}`);
   }
   lines.push(`${url} [${formFactor}] ${scoreParts.join(' ')}`);
+  lines.push(...runtimeErrorLines(lhr));
 
   // Failing metrics only — one compact line
   const failingMetrics = [];
@@ -159,14 +217,18 @@ export function compressFullReport(lhr, maxIssues = CONFIG.MAX_ISSUES_DEFAULT) {
 
   // Failed audits per category — skip categories with no failures
   for (const catId of CONFIG.DEFAULT_CATEGORIES) {
-    const failed = getFailedAudits(lhr, catId, maxIssues);
+    const failed = getFailedAudits(lhr, catId);
     if (failed.length === 0) continue;
 
+    const shown = failed.slice(0, Math.min(maxIssues, CONFIG.MAX_ISSUES_CAP));
     const label = CATEGORY_SHORT[catId] || catId;
+    const countNote = failed.length > shown.length
+      ? `${failed.length} issues, showing ${shown.length}`
+      : `${failed.length} issues`;
     lines.push('');
-    lines.push(`── ${label} (${failed.length} issues) ──`);
+    lines.push(`── ${label} (${countNote}) ──`);
 
-    for (const audit of failed) {
+    for (const audit of shown) {
       lines.push(`  ✗ ${audit.id}: ${auditDisplay(audit)}`);
 
       const elements = extractElements(audit);
@@ -287,10 +349,12 @@ export function compressA11yReport(lhr, maxIssues = CONFIG.MAX_ISSUES_A11Y_DEFAU
   const formFactor = sanitize(lhr.configSettings?.formFactor || 'unknown');
 
   const a11yCat = lhr.categories?.accessibility;
-  const score = a11yCat ? Math.round((a11yCat.score ?? 0) * 100) : 'N/A';
+  const score = !a11yCat ? 'N/A'
+    : (a11yCat.score == null ? '?' : Math.round(a11yCat.score * 100));
 
-  // Get all failed a11y audits
-  let failed = getFailedAudits(lhr, 'accessibility', CONFIG.MAX_ISSUES_CAP);
+  // Get ALL failed a11y audits — capping happens per impact group below,
+  // so a page with many failures never silently drops critical issues.
+  let failed = getFailedAudits(lhr, 'accessibility');
 
   if (wcagOnly) {
     failed = failed.filter(audit => getWcagTags(audit).length > 0);
@@ -318,6 +382,7 @@ export function compressA11yReport(lhr, maxIssues = CONFIG.MAX_ISSUES_A11Y_DEFAU
     .map(i => `${impactCounts[i]}${i[0]}`) // e.g., "2c 3s 4m"
     .join(' ');
   lines.push(`A11y: ${url} [${formFactor}] ${score}/100 — ${totalIssues} issues (${impactSummary})`);
+  lines.push(...runtimeErrorLines(lhr));
 
   // Detail per impact group — skip empty groups
   for (const impact of IMPACT_ORDER) {
@@ -373,6 +438,12 @@ export function compressA11yReport(lhr, maxIssues = CONFIG.MAX_ISSUES_A11Y_DEFAU
   }
 
   return truncateOutput(lines);
+}
+
+// All failed audits for a category, worst first, uncapped — shared with
+// the session diff so it sees the same failure set the reports do.
+export function listFailedAudits(lhr, categoryId) {
+  return getFailedAudits(lhr, categoryId);
 }
 
 // ─── Test-only exports ─────────────────────────────────────────────

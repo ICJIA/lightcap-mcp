@@ -1,48 +1,24 @@
 #!/usr/bin/env node
 
-import { readFileSync } from 'fs';
-import { createRequire } from 'module';
-import { execFile } from 'child_process';
 import { McpServer, StdioServerTransport } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
 import { runLighthouse, sanitizeError } from './runner.js';
 import { compressFullReport, compressA11yReport } from './compress.js';
 import { CONFIG, setVerbosity, log } from './config.js';
+import { pkg, installedLighthouseVersion, latestNpmVersion, statusText } from './versions.js';
+import { summarizeRun, diffLine, RunHistory } from './diff.js';
 
 if (process.argv.includes('--verbose')) setVerbosity('verbose');
 if (process.argv.includes('--quiet')) setVerbosity('quiet');
 
 // ─── Version tracking (loaded once on startup) ────────────────────
 
-const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url)));
 const serverVersion = pkg.version;
+const lhVersion = installedLighthouseVersion();
 
-let lhVersion = 'unknown';
-try {
-  // Resolve through Node's module algorithm rather than a fixed relative path:
-  // under npx/npm flat installs, lighthouse is hoisted to a parent node_modules
-  // (not ./node_modules/lighthouse), so the old '../node_modules/...' path
-  // failed there and get_status reported "vunknown".
-  const lhPkg = JSON.parse(readFileSync(createRequire(import.meta.url).resolve('lighthouse/package.json')));
-  lhVersion = lhPkg.version;
-} catch { /* ignore */ }
-
-// Kick off npm registry check at startup (non-blocking).
-// Use execFile to avoid shell interpretation.
-let _latestLhVersion = null;
-const _latestLhPromise = new Promise((resolve) => {
-  execFile('npm', ['view', 'lighthouse', 'version'], { timeout: 5000 }, (err, stdout) => {
-    const raw = err ? 'unknown' : stdout.trim();
-    // Sanitize: only accept semver-shaped strings
-    _latestLhVersion = /^\d+\.\d+\.\d+/.test(raw) ? raw : 'unknown';
-    resolve(_latestLhVersion);
-  });
-});
-
-async function getLatestLhVersion() {
-  if (_latestLhVersion) return _latestLhVersion;
-  return _latestLhPromise;
-}
+// Kick off npm registry check at startup (non-blocking); the promise
+// caches the result for the session.
+const latestLhPromise = latestNpmVersion('lighthouse');
 
 log('info', `Server v${serverVersion} | Lighthouse v${lhVersion}`);
 
@@ -52,6 +28,19 @@ const server = new McpServer({
   name: 'lightcap',
   version: serverVersion,
 });
+
+// Session-scoped history: re-audits of the same target get a Δ line
+// (score changes, fixed issues, new issues) prepended to the report.
+const history = new RunHistory();
+
+function withDiff(tool, params, lhr, text) {
+  const categories = (params.categories || CONFIG.DEFAULT_CATEGORIES).slice().sort().join(',');
+  const key = `${tool}|${params.url}|${params.viewport || CONFIG.DEFAULT_VIEWPORT}|${categories}`;
+  const curr = summarizeRun(lhr);
+  const delta = diffLine(history.get(key), curr);
+  history.set(key, curr);
+  return delta ? `${delta}\n${text}` : text;
+}
 
 // ─── run_audit ─────────────────────────────────────────────────────
 
@@ -76,6 +65,7 @@ server.registerTool(
       });
 
       let text = compressFullReport(lhr, params.maxIssues);
+      text = withDiff('audit', params, lhr, text);
 
       if (htmlPath) {
         text += `\n\nFull HTML report saved: ${htmlPath}`;
@@ -112,6 +102,7 @@ server.registerTool(
       });
 
       let text = compressA11yReport(lhr, params.maxIssues, params.wcagOnly);
+      text = withDiff('a11y', { ...params, categories: ['accessibility'] }, lhr, text);
 
       if (htmlPath) {
         text += `\n\nFull HTML report saved: ${htmlPath}`;
@@ -135,18 +126,8 @@ server.registerTool(
   },
   async () => {
     try {
-      const latest = await getLatestLhVersion();
-      const updateNote = (latest === 'unknown' || latest === lhVersion)
-        ? '(latest)'
-        : `(latest: v${latest} — update available)`;
-
-      const text = [
-        'lightcap status',
-        `  Server:     @icjia/lightcap v${serverVersion}`,
-        `  Lighthouse: v${lhVersion} ${updateNote}`,
-        `  Node:       v${process.versions.node}`,
-        `  Platform:   ${process.platform} ${process.arch}`,
-      ].join('\n');
+      const latestLh = await latestLhPromise;
+      const text = statusText({ serverVersion, lhVersion, latestLh });
 
       return { content: [{ type: 'text', text }] };
     } catch (err) {

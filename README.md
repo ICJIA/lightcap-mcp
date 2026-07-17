@@ -28,6 +28,9 @@ This audit → fix → re-audit loop is what makes an MCP server more valuable t
 - Includes WCAG criteria references (e.g., WCAG 1.1.1, 1.4.3) and CSS selectors for each issue
 - Filters to WCAG-only issues for compliance-focused audits (skips best-practice-only items)
 - Reports core web vitals (FCP, LCP, TBT, CLS, Speed Index) with pass/fail indicators
+- Shows which resources are implicated in performance issues, with wasted bytes/ms per file
+- Prepends a `Δ vs last run` line on re-audits: score deltas, fixed issues, new issues
+- Surfaces Lighthouse runtime errors (page failed to load, blocked, etc.) instead of silent zero scores
 - Optionally saves full HTML reports to disk for manual human review
 - Reports server and Lighthouse version info with npm update availability
 - Standalone CLI for use outside of MCP clients (`lightcap audit`, `lightcap a11y`, `lightcap status`)
@@ -37,7 +40,7 @@ This audit → fix → re-audit loop is what makes an MCP server more valuable t
 
 ### Prerequisites
 
-- **Node.js >= 18** (check with `node --version`)
+- **Node.js >= 22.19** (check with `node --version`; required by Lighthouse 13)
 - **Google Chrome** or **Chromium** installed on your system
 - **Claude Code**, **Cursor**, or any MCP-compatible client (for MCP mode)
 
@@ -189,8 +192,9 @@ Failing metrics: LCP=4.2s CLS=0.12
 ── Perf (5 issues) ──
   ✗ largest-contentful-paint: 4.2 s
   ✗ unused-css-rules: Reduce unused CSS
+    → main.css (48KB wasted), vendor.css (12KB wasted)
   ✗ render-blocking-resources: Eliminate render-blocking resources
-    → link[href="styles.css"], script[src="app.js"]
+    → styles.css (300ms), app.js (150ms)
 
 ── A11y (2 issues) ──
   ✗ image-alt: 12 images missing alt text
@@ -206,6 +210,21 @@ http://localhost:3000 [desktop] Perf:98 A11y:100 BP:100 SEO:100
 ```
 
 One line. ~30 tokens. No wasted context on a page that doesn't need fixing.
+
+**Re-audit diff:** when the same URL is audited again in the same session (same tool, viewport, and categories), a delta line is prepended so Claude sees immediately what its fixes changed:
+
+```
+Δ vs last run: A11y 88→95 · fixed: color-contrast, image-alt · new: none
+http://localhost:3000 [desktop] Perf:98 A11y:95 BP:100 SEO:100
+...
+```
+
+**Runtime errors:** if the page fails to load (blocked, cert error, no content painted), the report says so instead of returning misleading zeros — unscored categories render as `?` and the Lighthouse error code and message appear under the header:
+
+```
+http://localhost:3000 [desktop] Perf:? A11y:? BP:? SEO:?
+⚠ Audit error (ERRORED_DOCUMENT_REQUEST): Status code: 403 — results may be incomplete
+```
 
 ### `run_a11y`
 
@@ -263,6 +282,8 @@ A11y: http://localhost:3000 [desktop] 88/100 — 9 issues (2c 3s 4m)
 
 **Tiered detail:** Critical and serious issues show up to 5 affected elements each (these are the ones you need to fix first). Moderate and minor show up to 3 (enough to understand the pattern without burning context).
 
+**No silent drops:** every failed audit is grouped by impact — the `maxIssues` cap applies per impact group (with a `+N more` note), so a page with many failures can never have critical issues pushed out by moderate ones, and the header always counts the true total.
+
 ### `get_status`
 
 Returns server and Lighthouse version info. This is the only way Claude can see version information — `console.error()` goes to stderr which Claude never reads.
@@ -277,7 +298,7 @@ Returns server and Lighthouse version info. This is the only way Claude can see 
 
 ```
 lightcap status
-  Server:     @icjia/lightcap v0.1.6
+  Server:     @icjia/lightcap v0.2.0
   Lighthouse: v13.4.0 (latest)
   Node:       v22.22.0
   Platform:   darwin arm64
@@ -380,7 +401,7 @@ JSON wastes tokens on syntax (`{`, `}`, `"key":`, quotes). Plain structured text
 ## Testing
 
 ```bash
-# Run all tests (84 tests)
+# Run all tests (148 tests)
 npm test
 
 # Run a specific test file
@@ -388,16 +409,20 @@ node --test test/url-validation.test.js
 ```
 
 The test suite covers:
-- **URL validation** — scheme whitelist, blocking of file:/data:/javascript:/ftp: schemes, 0.0.0.0 blocking
+- **URL validation** — scheme whitelist, blocking of file:/data:/javascript:/ftp: schemes, 0.0.0.0 and [::] blocking
 - **Metadata endpoint blocking** — AWS (169.254.169.254), GCP (metadata.google.internal), Azure (metadata.azure.com)
-- **IP blocking** — localhost bypass, full 127.x loopback range, 0.x range, :: prefix, all RFC1918 172.16-31.x ranges
+- **IP blocking (behavioral)** — CIDR checks against real addresses: RFC1918 ranges, loopback, CGNAT, IPv6 unique-local beyond the fd00: literal (fd12::1), link-local tails (febf::1), IPv4-mapped IPv6, public addresses allowed
+- **Directory validation** — path-separator containment (isWithin), symlink escapes, outside-root rejection, sibling-name rejection, HTML report saving
+- **Audit queue** — serialization, depth cap rejection, recovery after task failure
 - **Sanitization** — control char stripping, newline removal, zero-width char removal, prompt injection via newlines
 - **Explanation truncation** — length cap at 120 chars, sanitization, null handling
-- **Error sanitization** — known-safe passthrough, connection refused/timeout/DNS mapping, path leakage prevention
-- **Compression** — compact header format, score extraction, failed-only filtering, failing-only metrics, maxIssues cap, selector truncation/deduplication, output line + char limits, token estimation
-- **A11y grouping** — impact level grouping, WCAG tag filtering, compact header with impact shorthand, element counts, tiered element detail
+- **Error sanitization** — known-safe passthrough, connection refused/timeout/DNS mapping, Chrome-not-found mapping, path leakage prevention
+- **Compression** — compact header format, score extraction, failed-only filtering, failing-only metrics, honest capped headers, selector truncation/deduplication, perf resource labels with wasted bytes/ms, runtime error surfacing, output line + char limits, token estimation
+- **A11y grouping** — impact level grouping, no silent drops beyond 15 failures, WCAG tag filtering (applied before capping), compact header with impact shorthand, element counts, tiered element detail
 - **WCAG parsing** — 3-digit tags (wcag111 → 1.1.1), 4-digit tags (wcag1412 → 1.4.12)
-- **Config sanity** — all numeric limits positive, default categories, metric thresholds, new security constants
+- **Versions** — module-resolution-based Lighthouse version detection, npm output sanitization, status formatting
+- **Session diff** — run summaries, delta lines (scores/fixed/new), LRU history eviction
+- **Config sanity** — all numeric limits positive, default categories, metric thresholds, CIDR range well-formedness
 
 ## Local development
 
@@ -442,20 +467,24 @@ After editing source files, restart Claude Code to pick up changes (the server i
 
 ```
 src/
-├── server.js ........... MCP server init + 3 tool registrations + version tracking
-├── runner.js ........... Chrome launch + Lighthouse execution + URL/directory validation
+├── server.js ........... MCP server init + 3 tool registrations + session diff wiring
+├── runner.js ........... Chrome launch + Lighthouse execution + URL/directory validation + bounded queue
 ├── compress.js ......... Report → compressed plain text (the core of the server)
+├── diff.js ............. Session run history + Δ-vs-last-run lines
+├── versions.js ......... Package/Lighthouse version detection + npm update check + status text
 ├── cli.js .............. Commander-based standalone CLI (audit, a11y, status subcommands)
-└── config.js ........... Constants, metric thresholds, logging helper
+└── config.js ........... Constants, metric thresholds, CIDR blocklist, logging helper
 ```
 
 | File | Role |
 |------|------|
-| `server.js` | MCP init, Zod schemas for 3 tools, request routing, error handling |
-| `runner.js` | `chrome-launcher` lifecycle, Lighthouse flags/config, URL validation (scheme whitelist, IP resolution, metadata blocklist), directory validation (symlink-aware) |
-| `compress.js` | `compressFullReport()` — scores + failed audits + metrics; `compressA11yReport()` — impact grouping + WCAG refs + element dedup |
+| `server.js` | MCP init, Zod schemas for 3 tools, request routing, error handling, re-audit diff lines |
+| `runner.js` | `chrome-launcher` lifecycle, bounded audit queue, Lighthouse flags/config, URL validation (scheme whitelist, CIDR BlockList, metadata blocklist), directory validation (symlink-aware, separator-guarded) |
+| `compress.js` | `compressFullReport()` — scores + failed audits + metrics + resource evidence; `compressA11yReport()` — impact grouping + WCAG refs + element dedup; runtime error surfacing |
+| `diff.js` | `summarizeRun()`, `diffLine()`, `RunHistory` (LRU) for the audit → fix → re-audit loop |
+| `versions.js` | `createRequire`-based Lighthouse version detection (works under npx flat installs), sanitized npm registry check, shared status block |
 | `cli.js` | `audit`, `a11y`, `status` subcommands; falls back to MCP server mode when no subcommand given |
-| `config.js` | `CONFIG` object with all limits/thresholds, `log(level, msg)` helper, `setVerbosity()` |
+| `config.js` | `CONFIG` object with all limits/thresholds/CIDR ranges, `log(level, msg)` helper, `setVerbosity()` |
 
 ### Dependencies
 
@@ -482,11 +511,11 @@ An adversarial red/blue team audit was conducted after the initial release. All 
 ### SSRF prevention
 
 - **Scheme whitelist:** Only `http:` and `https:` URLs are allowed. `file://`, `data:`, `javascript:`, `ftp://`, and all other schemes are blocked.
-- **Metadata endpoint blocklist:** AWS (`169.254.169.254`), GCP (`metadata.google.internal`), Azure (`metadata.azure.com`), and `0.0.0.0` are blocked by hostname.
-- **Private IP range blocklist:** All RFC1918 private ranges (`10.x`, `172.16-31.x`, `192.168.x`), full loopback range (`127.x`), "this network" range (`0.x`), IPv4 link-local (`169.254.x`), IPv6 link-local (`fe80:`), IPv6 unique-local (`fd00:`), and IPv6 unspecified/loopback (`::`) are blocked.
-- **IPv6-mapped IPv4 normalization:** Addresses like `::ffff:169.254.169.254` are normalized before prefix checking.
-- **IP resolution:** Hostnames are resolved to IP addresses and checked against blocked ranges, catching hex IPs, octal IPs, IPv6-mapped addresses, and DNS wildcard services.
-- **Fail-closed DNS:** If hostname resolution fails, the request is blocked (not allowed).
+- **Metadata endpoint blocklist:** AWS (`169.254.169.254`), GCP (`metadata.google.internal`), Azure (`metadata.azure.com`), `0.0.0.0`, and `[::]` are blocked by hostname.
+- **CIDR range blocklist:** Resolved addresses are checked with Node's `net.BlockList` against proper CIDR ranges — RFC1918 (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), loopback (`127.0.0.0/8`, `::1/128`), "this network" (`0.0.0.0/8`), link-local (`169.254.0.0/16`, `fe80::/10`), CGNAT (`100.64.0.0/10`), IPv6 unique-local (`fc00::/7`), and unspecified (`::/128`). CIDR matching closes the string-prefix gaps (e.g., `fd12::1` is inside `fc00::/7` but does not start with the literal `fd00:`).
+- **All resolved addresses checked:** DNS lookups use `{ all: true }` — a hostname with one public and one private record is blocked, not waved through on its first record.
+- **IPv6-mapped IPv4 normalization:** Addresses like `::ffff:169.254.169.254` are normalized before checking.
+- **Fail-closed DNS:** If hostname resolution fails or returns an unrecognizable address, the request is blocked (not allowed).
 - **Post-audit URL recheck:** After Lighthouse completes, `lhr.finalDisplayedUrl` is validated against the same blocklist — catches HTTP redirect chains and DNS rebinding attacks. Fail-closed: if the final URL cannot be determined, the result is rejected.
 
 ### Prompt injection prevention
@@ -498,20 +527,23 @@ An adversarial red/blue team audit was conducted after the initial release. All 
 
 ### Directory traversal prevention
 
-- Output paths are validated against the user's home directory and `/tmp` only.
+- Output paths are validated against the user's home directory and `/tmp` only, with a path-separator guard (`/tmpfoo` and `/Users/name 2` are not within `/tmp` / `/Users/name`).
 - The deepest existing ancestor directory is resolved via `realpathSync` **before** any new directories are created, preventing TOCTOU symlink swap attacks.
 - After creation, the final path is re-verified against allowed roots (belt and suspenders).
+- Report files are written with the `wx` flag and a random filename suffix, so a pre-planted symlink at the target path is refused rather than followed.
 
 ### Error message safety
 
 - Error messages returned to the AI are sanitized through an allowlist. Known safe messages pass through; common error types (connection refused, timeout, DNS failure) are mapped to generic messages; unknown errors return `'Audit failed'` with details logged to stderr only.
+- A missing Chrome/Chromium binary (the most common first-run failure) maps to an actionable message: `Chrome not found — install Google Chrome or set CHROME_PATH`.
 - External URL logging writes hostname only (not full URL) to stderr, preventing token leakage from query parameters.
 
 ### Resource limits
 
 | Resource | Limit | Enforced By |
 |----------|-------|-------------|
-| Concurrent audits | 2 max | runner.js (queue + counter) |
+| Audit execution | serialized — one Chrome at a time | runner.js (bounded queue) |
+| Queued audits | 3 max pending; beyond that rejected fast with "Audit queue full" | runner.js (bounded queue) |
 | Lighthouse audit timeout | 60s | runner.js (Promise.race + clearTimeout) |
 | Page navigation timeout | 30s | Lighthouse maxWaitForLoad flag |
 | URL length | 2048 chars | Zod schema |
@@ -528,7 +560,7 @@ An adversarial red/blue team audit was conducted after the initial release. All 
 
 - **MCP path:** All parameters validated by Zod schemas with enforced min/max bounds. URLs validated with `z.url().max(2048)`. Categories constrained to enum. `maxIssues` capped at 15. Directory paths capped at 500 chars.
 - **CLI path:** Numeric inputs validated with bounds checking (`clampInt`). Categories filtered against allowed set in `runLighthouse()`.
-- **Request serialization:** Audits are serialized through a shared async queue, preventing concurrent Chrome process collisions.
+- **Request serialization:** Audits are serialized through a shared bounded queue (one Chrome at a time, at most 3 pending), preventing concurrent Chrome process collisions and unbounded request pileups.
 
 ### No raw data exposure
 

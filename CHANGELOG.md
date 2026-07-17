@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.2.0 — 2026-07-17
+
+### Bug fixes, security hardening, and re-audit diffs
+
+**Bugs fixed:**
+- `lightcap status` (CLI) reported `Lighthouse: vunknown` under npx/global installs: the v0.1.6 fix (resolve via `createRequire` instead of a fixed `../node_modules/...` path) was applied only in `server.js`; `cli.js` still used the broken path. **Fix:** version logic extracted to a shared `src/versions.js` used by both the MCP `get_status` tool and the CLI `status` subcommand.
+- `engines` claimed Node `>=18`, but Lighthouse 13.4 requires Node `>=22.19` — users on Node 18/20 following the README got install warnings or runtime breakage. **Fix:** `engines` bumped to `>=22.19` (matches `.nvmrc`); README prerequisites updated.
+- `run_a11y` silently dropped issues on issue-heavy pages: failed audits were pre-capped at 15 *before* impact grouping. Most failed a11y audits score exactly 0, so the kept 15 were arbitrary — **critical issues could be dropped while moderates survived** — and the header undercounted. With `wcagOnly`, non-WCAG audits could consume all 15 slots and hide every WCAG issue. **Fix:** all failed audits are grouped; `maxIssues` caps per impact group only (with `+N more` notes); `wcagOnly` filters before any capping; headers count true totals. The full report header is now honest too: `── Perf (12 issues, showing 5) ──` when capped.
+- The concurrency guard was dead code: the serialization queue meant `inFlight` could never reach `MAX_CONCURRENT_AUDITS` (2), so "Audit queue full" could never fire — while queue depth was unbounded (N rapid calls piled up serially at up to 60s each, far past any MCP client timeout). **Fix:** real bounded queue (`MAX_QUEUE_DEPTH` 3 pending); excess requests rejected fast with `'Audit queue full'`. Execution remains one Chrome at a time.
+- Page-load failures masqueraded as zero scores: `lhr.runtimeError`/`lhr.runWarnings` were never read, so a blocked or unloadable page reported `Perf:0 A11y:0 ...` and invited "fixes" for a page that never rendered. **Fix:** runtime errors surface under the header (`⚠ Audit error (CODE): message — results may be incomplete`, sanitized and length-capped), up to 2 run warnings shown, and unscored categories render as `?` instead of `0`.
+- A missing Chrome binary — the most common first-run failure — returned the generic `'Audit failed'`. **Fix:** chrome-launcher failures (`ERR_LAUNCHER_PATH_NOT_SET`, `CHROME_PATH`, "No Chrome installations found") map to `'Chrome not found — install Google Chrome or set CHROME_PATH'`.
+
+**Security hardening:**
+- IP blocklist rewritten from string-prefix matching to CIDR checks via Node's built-in `net.BlockList`. String prefixes had real gaps: IPv6 unique-local is `fc00::/7`, but only literal `fd00:` was matched — `fd12:3456::1` sailed through; the `fe80::/10` tail (e.g. `febf::1`) likewise. CIDR ranges now cover RFC1918, loopback (v4+v6), `0.0.0.0/8`, link-local (v4+v6), `fc00::/7`, `::/128`, and newly **CGNAT `100.64.0.0/10`**. Unrecognizable resolved addresses fail closed.
+- DNS resolution now checks **every** resolved address (`lookup {all: true}`) — a hostname with one public and one private record no longer passes on its first record.
+- `validateOutputDir` prefix checks gained a path-separator guard: `/tmpfoo` and `/Users/name 2` (a real macOS Migration Assistant artifact) no longer satisfy `startsWith('/tmp')` / `startsWith(home)`.
+- HTML reports are written with the `wx` flag plus a random filename suffix — a pre-planted symlink at the target path is refused rather than written through.
+- `http://[::]` is now blocked, matching the existing `http://0.0.0.0` block (both mean the unspecified address); `0.0.0.0`/`[::]` removed from the localhost allowlist.
+
+**Added:**
+- **Re-audit diffs** (`src/diff.js`): auditing the same target again in the same session (same tool, viewport, categories) prepends `Δ vs last run: A11y 88→95 · fixed: color-contrast, image-alt · new: none` — score deltas, fixed issues, and new issues, capped at 3 ids per list. History is session-scoped, keyed per tool/URL/viewport/categories, LRU-capped at 20 targets. This closes the loop on the audit → fix → re-audit workflow.
+- **Performance resource evidence:** perf/BP audits that list resources by URL (render-blocking-resources, unused-css-rules, …) previously showed no elements at all (only DOM `node.selector` was read). Element extraction now falls back to the resource URL (file basename, or hostname for root URLs) and appends per-item waste: `→ main.css (48KB wasted)`, `→ styles.css (300ms)`.
+
+**Internals:**
+- `src/versions.js` — shared version detection (`createRequire`-based), sanitized npm registry check, shared status block for server + CLI.
+- `getFailedAudits()` returns all failures uncapped when no limit is passed; exported as `listFailedAudits()` for the diff module.
+
+### Test improvements (148 tests, was 84)
+- Behavioral SSRF tests against real addresses (RFC1918, CGNAT, `fd12::1`, `febf::1`, mapped IPv4, public-address allow cases)
+- `validateOutputDir` behavioral tests: symlink escape, outside-root, sibling-name rejection, happy path (previously the only security-critical function with zero tests)
+- Bounded queue: serialization order, depth-cap rejection, recovery after task failure
+- Runtime error surfacing, `?` scores, capped-header honesty, a11y no-silent-drop (21-failure and wcagOnly-beyond-cap cases)
+- Perf resource labels and waste details; chrome-not-found mapping
+- `versions.js` (module-resolution version detection, npm output sanitization, status format) and `diff.js` (summaries, delta lines, LRU history)
+
+---
+
 ## 0.1.7 — 2026-07-01
 
 ### Fix: server failed to start under `npx` (MCP SDK prerelease drift)
