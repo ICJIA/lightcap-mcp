@@ -3,14 +3,17 @@ set -euo pipefail
 
 # LightCap publish script
 # Usage:
-#   ./publish.sh              — first-time setup + publish
-#   ./publish.sh patch        — bump patch version and publish (default)
-#   ./publish.sh minor        — bump minor version and publish
-#   ./publish.sh major        — bump major version and publish
-#   ./publish.sh --dry-run    — dry run only, no publish
+#   ./publish.sh                 — first-time setup + publish
+#   ./publish.sh patch           — bump patch version and publish (default)
+#   ./publish.sh minor           — bump minor version and publish
+#   ./publish.sh major           — bump major version and publish
+#   ./publish.sh patch 123456    — bump + publish, passing a 2FA OTP (skips the
+#                                  y/N confirm; needed for npm 2FA / non-interactive)
+#   ./publish.sh --dry-run       — dry run only, no publish
 
 PACKAGE_NAME="@icjia/lightcap"
 BUMP="${1:-patch}"
+OTP="${2:-}"
 DRY_RUN=false
 
 if [[ "$BUMP" == "--dry-run" ]]; then
@@ -70,6 +73,11 @@ if [[ "$BUMP" != "patch" && "$BUMP" != "minor" && "$BUMP" != "major" ]]; then
   exit 1
 fi
 
+# Sanity-check OTP format if provided (npm 2FA codes are 6 digits)
+if [[ -n "$OTP" && ! "$OTP" =~ ^[0-9]{6}$ ]]; then
+  warn "OTP '$OTP' doesn't look like a 6-digit code — passing it through anyway."
+fi
+
 # ─── First-time detection ───────────────────────────────────────────
 
 FIRST_TIME=false
@@ -81,17 +89,21 @@ fi
 # ─── Version bump ───────────────────────────────────────────────────
 
 CURRENT_VERSION=$(pkg_field version)
+info "Current version: $CURRENT_VERSION"
+info "Bumping: $BUMP"
+NEW_VERSION=$(npm version "$BUMP" --no-git-tag-version)
+NEW_VERSION="${NEW_VERSION#v}" # strip leading 'v'
+info "New version: $NEW_VERSION"
 
-if [[ "$FIRST_TIME" == true ]]; then
-  info "Current version: $CURRENT_VERSION (will publish as-is for first release)"
-  NEW_VERSION="$CURRENT_VERSION"
-else
-  info "Current version: $CURRENT_VERSION"
-  info "Bumping: $BUMP"
-  NEW_VERSION=$(npm version "$BUMP" --no-git-tag-version)
-  NEW_VERSION="${NEW_VERSION#v}" # strip leading 'v'
-  info "New version: $NEW_VERSION"
+# ─── CHANGELOG check ────────────────────────────────────────────────
+
+# Require a CHANGELOG entry for the new version before publishing.
+if ! grep -qE "\[$NEW_VERSION\]|## $NEW_VERSION( |$)" CHANGELOG.md; then
+  error "CHANGELOG.md has no entry for [$NEW_VERSION]. Add one before publishing."
+  git checkout package.json package-lock.json
+  exit 1
 fi
+info "CHANGELOG.md entry for $NEW_VERSION found."
 
 # ─── Dry run ────────────────────────────────────────────────────────
 
@@ -107,54 +119,51 @@ fi
 echo ""
 
 if [[ "$DRY_RUN" == true ]]; then
-  # Revert the version bump since we're not publishing.
-  # npm version updates package-lock.json too — revert both, or the
-  # leftover lockfile change trips the clean-tree check on the real run.
-  if [[ "$FIRST_TIME" == false ]]; then
-    git checkout package.json package-lock.json
-  fi
+  # Revert the version bump since we're not publishing
+  git checkout package.json package-lock.json
   info "Dry run complete. No changes made."
   exit 0
 fi
 
 # ─── Confirm ────────────────────────────────────────────────────────
 
-echo ""
-if [[ "$FIRST_TIME" == true ]]; then
-  warn "About to publish $PACKAGE_NAME@$NEW_VERSION for the FIRST TIME."
+# An OTP is an explicit, time-sensitive signal of intent — skip the prompt so
+# the code doesn't expire while waiting (and so non-interactive runs work).
+if [[ -n "$OTP" ]]; then
+  info "OTP provided — skipping confirmation and publishing now."
 else
-  warn "About to publish $PACKAGE_NAME@$NEW_VERSION"
-fi
-read -p "Proceed? (y/N) " -n 1 -r
-echo ""
-
-if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-  # Revert the version bump (package-lock.json changes too)
-  if [[ "$FIRST_TIME" == false ]]; then
-    git checkout package.json package-lock.json
+  echo ""
+  if [[ "$FIRST_TIME" == true ]]; then
+    warn "About to publish $PACKAGE_NAME@$NEW_VERSION for the FIRST TIME."
+  else
+    warn "About to publish $PACKAGE_NAME@$NEW_VERSION"
   fi
-  info "Aborted. No changes made."
-  exit 0
+  read -p "Proceed? (y/N) " -n 1 -r
+  echo ""
+
+  if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+    # Revert the version bump
+    git checkout package.json package-lock.json
+    info "Aborted. No changes made."
+    exit 0
+  fi
 fi
 
 # ─── Publish ────────────────────────────────────────────────────────
 
+# ${OTP:+--otp "$OTP"} expands to nothing when no OTP was given, or to the
+# --otp flag and code when one was. If omitted and 2FA is on, npm prompts.
 if [[ "$FIRST_TIME" == true ]]; then
-  npm publish --access public
+  npm publish --access public ${OTP:+--otp "$OTP"}
 else
-  npm publish
+  npm publish ${OTP:+--otp "$OTP"}
 fi
 
 # ─── Git commit + tag ───────────────────────────────────────────────
 
-if [[ "$FIRST_TIME" == true ]]; then
-  # First-time: no version bump to commit, but tag the initial release
-  git tag "v$NEW_VERSION"
-else
-  git add package.json package-lock.json
-  git commit -m "release: v$NEW_VERSION"
-  git tag "v$NEW_VERSION"
-fi
+git add package.json package-lock.json
+git commit -m "release: v$NEW_VERSION"
+git tag "v$NEW_VERSION"
 
 git push && git push --tags
 
