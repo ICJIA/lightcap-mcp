@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.1 — 2026-08-14
+
+### Changed
+
+- **Lighthouse `^13.4.0` → `^13.4.1`** and refreshed the lockfile, so fresh
+  installs (`npx -y @icjia/lightcap`) resolve the current Lighthouse patch
+  instead of a stale cached resolution that `get_status` flags as outdated.
+
 ## 0.2.0 — 2026-07-17
 
 ### Bug fixes, security hardening, and re-audit diffs
