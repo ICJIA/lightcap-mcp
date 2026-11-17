@@ -33,8 +33,42 @@ This audit → fix → re-audit loop is what makes an MCP server more valuable t
 - Surfaces Lighthouse runtime errors (page failed to load, blocked, etc.) instead of silent zero scores
 - Optionally saves full HTML reports to disk for manual human review
 - Reports server and Lighthouse version info with npm update availability
-- Standalone CLI for use outside of MCP clients (`lightcap audit`, `lightcap a11y`, `lightcap status`)
+- Standalone CLI with full MCP parity (macOS + Linux), so Claude can audit without the MCP server installed
 - Runs as a local MCP server over stdio (no HTTP, no ports, no remote attack surface)
+
+## MCP or CLI?
+
+LightCap runs two ways, and both produce **the same compressed text output** from the same code (`runner.js` + `compress.js` + `diff.js`):
+
+- **MCP server**: Claude calls `run_audit`, `run_a11y` and `get_status` directly. Registering it means its tool definitions are part of every Claude Code session and a server process is spawned for each one.
+- **CLI**: Claude (or you) runs `lightcap a11y <url>` through the shell. No server registration, no tool definitions in context, nothing running between audits. This is the lighter option if you want to save tokens and credits, and it works the same on macOS and Linux.
+
+You can run both, or uninstall the MCP server and rely on the CLI alone (see [Using the CLI instead of the MCP server](#using-the-cli-instead-of-the-mcp-server)).
+
+### Feature parity
+
+Everything the MCP server does, the CLI does too, as of v0.3.0.
+
+| Capability | MCP tool / parameter | CLI command / flag |
+|---|---|---|
+| Full audit | `run_audit` | `lightcap audit <url>` |
+| Categories | `categories: [...]` | `-c, --categories performance,seo` |
+| Top N per category | `maxIssues` | `-n, --max-issues <n>` |
+| Mobile viewport | `viewport` | `-v, --viewport mobile` |
+| Save HTML report | `directory` | `-d, --directory <path>` |
+| Accessibility-only audit | `run_a11y` | `lightcap a11y <url>` |
+| Top N per impact group | `maxIssues` | `-n, --max-issues <n>` |
+| WCAG-tagged issues only | `wcagOnly` | `--wcag-only` |
+| `Δ vs last run` on re-audits | automatic, per MCP session | automatic, saved between runs (`--no-diff` to skip) |
+| Versions + update check | `get_status` | `lightcap status` (or `lightcap --version`) |
+| Logging | `--verbose` / `--quiet` server args | `--verbose` / `--quiet` (any position) |
+
+**Known differences** (none affect audit results):
+
+- **Re-audit history:** the MCP server keeps it in memory, so it resets when the session ends. The CLI saves it to `~/.cache/lightcap/cli-history.json` (or `$XDG_CACHE_HOME/lightcap/…`, or wherever `LIGHTCAP_HISTORY` points). The file holds only scores and failed-audit IDs per URL/viewport/category set, for the last 20 targets, and is readable only by you. Either way, re-auditing the same target prints the same `Δ vs last run` line.
+- The MCP server checks npm for a newer Lighthouse once at startup; `lightcap status` checks when you run it.
+- The CLI writes progress logs (`[lightcap] ...`) to stderr. Add `--quiet` to keep Claude's Bash output down to the report itself.
+- SSRF protection, URL validation, the output-directory boundary, the audit queue, timeouts and error sanitization are shared code, so the two modes enforce exactly the same limits.
 
 ## Installation
 
@@ -306,12 +340,48 @@ lightcap status
 
 ## CLI (standalone usage)
 
-LightCap includes a standalone CLI for use outside of MCP clients:
+### Install the CLI from a clone (macOS + Linux)
 
 ```bash
-# Install globally (or use npx)
-npm install -g @icjia/lightcap
+git clone https://github.com/ICJIA/lightcap-mcp.git
+cd lightcap-mcp
+./install-cli.sh
+source ~/.zshrc     # or ~/.bashrc, or open a new terminal
+```
 
+`install-cli.sh` is safe to re-run (after a `git pull`, for example). It:
+
+1. Checks for Node 22.19+ (required by Lighthouse 13) and runs `npm install`.
+2. Checks that Chrome or Chromium is installed. lightcap uses your system Chrome through chrome-launcher; set `CHROME_PATH` to use a specific binary. If none is found, it tells you what to install.
+3. Adds a `lightcap` alias to `~/.zshrc` (and to `~/.bashrc` if you have one or bash is your login shell). The alias sits between `# >>> lightcap cli >>>` markers, so re-running replaces it instead of duplicating it.
+4. Symlinks `~/.local/bin/lightcap` to `src/cli.js`. Aliases only load in interactive shells, so the symlink is what lets **Claude Code's Bash tool**, scripts and cron find `lightcap`. If `~/.local/bin` isn't on your `PATH`, the script tells you what to add.
+5. Runs a test audit against a tiny page it serves on localhost, to prove Chrome launches and Lighthouse runs.
+
+To remove the alias and symlink: `./install-cli.sh --uninstall`.
+
+Prefer npm? `npm install -g @icjia/lightcap` installs the same `lightcap` command (no alias needed).
+
+### Using the CLI instead of the MCP server
+
+1. Install the CLI (above) and check it: `lightcap status`.
+2. Remove the MCP server registration:
+
+   ```bash
+   claude mcp remove lightcap -s user     # or -s project / -s local, wherever you added it
+   ```
+
+3. Tell Claude about the CLI. Add this to `~/.claude/CLAUDE.md` (or a project `CLAUDE.md`):
+
+   ```markdown
+   - For Lighthouse audits, use the `lightcap` CLI via Bash (the MCP server is not installed):
+     `lightcap --quiet audit <url>` (-c categories, -n max issues, -v mobile, -d dir),
+     `lightcap --quiet a11y <url>` (--wcag-only), `lightcap status`.
+     Output is compressed plain text; re-audits print a "Δ vs last run" line.
+   ```
+
+### Commands
+
+```bash
 # Full audit
 lightcap audit http://localhost:3000
 
@@ -333,14 +403,27 @@ lightcap audit http://localhost:3000 -d ~/reports
 # Top 10 issues per category
 lightcap audit http://localhost:3000 -n 10
 
-# Check versions
-lightcap status
+# Re-audit after a fix: the report starts with what changed
+lightcap a11y http://localhost:3000
+#   Δ vs last run: A11y 88→95 · fixed: color-contrast, image-alt · new: none
 
-# Verbose logging
+# Skip the diff (and don't record this run)
+lightcap a11y http://localhost:3000 --no-diff
+
+# Check versions
+lightcap --version   # lightcap v0.3.0 (Lighthouse v13.x.x)
+lightcap status      # also Node/platform, and checks npm for a newer Lighthouse
+
+# Quiet output (no progress logs on stderr), handy when Claude runs it
+lightcap --quiet a11y http://localhost:3000
+
+# Verbose logging (flag position doesn't matter)
 lightcap --verbose audit http://localhost:3000
 ```
 
-When run without a subcommand, `lightcap` starts in MCP server mode (stdio transport).
+The exit code is `1` on any error, so `lightcap` also works in scripts and CI.
+
+Run with no arguments, `lightcap` starts the MCP server. MCP clients always launch it that way, with stdin piped. If you type plain `lightcap` at a terminal, it prints help instead of sitting there waiting for JSON-RPC. The help starts with the lightcap and Lighthouse versions, then lists the commands, examples and global flags.
 
 ## Usage examples
 
@@ -472,7 +555,9 @@ src/
 ├── compress.js ......... Report → compressed plain text (the core of the server)
 ├── diff.js ............. Session run history + Δ-vs-last-run lines
 ├── versions.js ......... Package/Lighthouse version detection + npm update check + status text
-├── cli.js .............. Commander-based standalone CLI (audit, a11y, status subcommands)
+├── cli.js .............. Commander-based standalone CLI (audit, a11y, status; MCP parity)
+├── cli-args.js ......... Pure argv helpers (global flags, server-vs-CLI dispatch)
+├── cli-history.js ...... Persistent run history for CLI re-audit diffs
 └── config.js ........... Constants, metric thresholds, CIDR blocklist, logging helper
 ```
 
@@ -483,7 +568,9 @@ src/
 | `compress.js` | `compressFullReport()` — scores + failed audits + metrics + resource evidence; `compressA11yReport()` — impact grouping + WCAG refs + element dedup; runtime error surfacing |
 | `diff.js` | `summarizeRun()`, `diffLine()`, `RunHistory` (LRU) for the audit → fix → re-audit loop |
 | `versions.js` | `createRequire`-based Lighthouse version detection (works under npx flat installs), sanitized npm registry check, shared status block |
-| `cli.js` | `audit`, `a11y`, `status` subcommands; falls back to MCP server mode when no subcommand given |
+| `cli.js` | `audit`, `a11y`, `status` subcommands; starts MCP server mode on a bare invocation with piped stdin, prints help at a TTY |
+| `cli-history.js` | Saves `summarizeRun()` results between CLI runs (owner-only JSON, LRU 20) so the CLI prints the same `Δ vs last run` line as the MCP tools |
+| `install-cli.sh` | macOS/Linux installer: Node/Chrome checks, deps, `~/.zshrc`/`~/.bashrc` alias, `~/.local/bin` symlink, smoke test |
 | `config.js` | `CONFIG` object with all limits/thresholds/CIDR ranges, `log(level, msg)` helper, `setVerbosity()` |
 
 ### Dependencies

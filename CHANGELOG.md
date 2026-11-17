@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.3.0 — 2026-11-17
+
+### Added
+
+- **CLI parity with the MCP server**, so Claude can run audits through Bash without the MCP server installed (fewer tokens, no server process):
+  - **Re-audit diffs on the CLI.** `lightcap audit` / `lightcap a11y` now print the same `Δ vs last run` line as the MCP tools. The MCP server keeps history in memory per session; the one-shot CLI saves the same summaries (scores + failed audit IDs only, last 20 targets, owner-only file) to `~/.cache/lightcap/cli-history.json` (`$XDG_CACHE_HOME` and `LIGHTCAP_HISTORY` are honored). `--no-diff` skips it.
+- **`install-cli.sh`** (macOS + Linux): checks for Node 22.19+, runs `npm install`, checks for Chrome/Chromium (or `CHROME_PATH`) with install hints, adds a `lightcap` alias to `~/.zshrc` (and `~/.bashrc` when present or bash is the login shell) inside a marked block that re-runs replace, symlinks `~/.local/bin/lightcap` so non-interactive shells (including Claude Code's Bash tool) find it, and runs a test audit against a throwaway localhost page. `--uninstall` removes the alias and symlink.
+- README: new "MCP or CLI?" section with a feature-parity table, plus steps for switching from the MCP server to the CLI.
+
+### Fixed
+
+- **`lightcap --verbose audit <url>` (or `--quiet` before a subcommand) started the MCP server instead of running the audit.** Global flags are now handled position-independently before dispatch (same fix as axecap 0.1.2). `lightcap --verbose` / `--quiet` on their own still start the server, as MCP configs expect.
+
+### Changed
+
+- Running bare `lightcap` at an interactive terminal now prints help (exit 0) instead of silently starting the MCP server and waiting for input. MCP clients always pipe stdin, so they still get the server. The help header shows the lightcap and Lighthouse versions and ends with examples and the global flags.
+- `lightcap --version` / `-V` now prints both versions: `lightcap v0.3.0 (Lighthouse v13.x.x)`.
+- CLI errors go through the same `sanitizeError()` as the MCP tools. For example, a missing Chrome now reports `Chrome not found — install Google Chrome or set CHROME_PATH`.
+- `src/cli.js` is now marked executable in git, so the symlink runs directly.
+- The MCP server itself (`server.js`, tools, schemas, output) is unchanged. Verified by an MCP handshake against v0.2.0: identical `tools/list`, `run_a11y` (including the re-audit diff) and `get_status` responses.
+
 ## 0.2.1 — 2026-08-14
 
 ### Changed
