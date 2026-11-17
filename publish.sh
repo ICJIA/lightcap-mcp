@@ -31,6 +31,15 @@ info()  { echo -e "${GREEN}[lightcap]${NC} $1"; }
 warn()  { echo -e "${YELLOW}[lightcap]${NC} $1"; }
 error() { echo -e "${RED}[lightcap]${NC} $1" >&2; }
 
+# The OTP must be a 6-8 digit code. Anything else (e.g. a misplaced
+# --dry-run: `./publish.sh minor --dry-run`) would otherwise be sent to npm as
+# the "code" during a REAL publish, so stop here before bumping anything.
+if [[ -n "$OTP" && ! "$OTP" =~ ^[0-9]{6,8}$ ]]; then
+  error "OTP '$OTP' is not a 6-8 digit code — nothing was changed or published."
+  error "Usage: ./publish.sh [patch|minor|major] [otp]   or   ./publish.sh --dry-run"
+  exit 1
+fi
+
 # Helper to read package.json fields (ESM-safe — project uses "type": "module")
 pkg_field() {
   node --input-type=commonjs -e "console.log(require('./package.json').$1)"
@@ -71,11 +80,6 @@ fi
 if [[ "$BUMP" != "patch" && "$BUMP" != "minor" && "$BUMP" != "major" ]]; then
   error "Invalid bump type: '$BUMP'. Use patch, minor, or major."
   exit 1
-fi
-
-# Sanity-check OTP format if provided (npm 2FA codes are 6 digits)
-if [[ -n "$OTP" && ! "$OTP" =~ ^[0-9]{6}$ ]]; then
-  warn "OTP '$OTP' doesn't look like a 6-digit code — passing it through anyway."
 fi
 
 # ─── First-time detection ───────────────────────────────────────────

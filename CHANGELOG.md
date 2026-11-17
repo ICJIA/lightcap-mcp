@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.1 — 2026-11-17
+
+### Changed
+
+- **Lighthouse `^13.4.1` → `^13.6.0`** (13.6.0 at time of publish). Tool list and options are unchanged.
+- **`publish.sh` refuses a non-numeric OTP** (must be 6–8 digits) and checks it before anything else runs. Previously a misplaced flag such as `./publish.sh minor --dry-run` was passed to npm as the 2FA code during a *real* publish, with only a warning.
+
+### Added
+
+- **og:image** (`docs/og-image.png`, 1200×630, with its HTML source `docs/og-image.html`) at the top of the README, with npm / license / "MCP server + CLI" badges underneath.
+- README: "Why the CLI exists" (the standing token cost of registered MCP tool definitions vs. a shell command run on demand), "How language models use the CLI" (example commands, sample output, agent tips, `AGENTS.md` / Cursor / Aider notes), and hand setup for the alias in **zsh** and **bash**, including the interactive-only alias caveat and the `~/.local/bin` symlink.
+
 ## 0.3.0 — 2026-11-17
 
 ### Added

@@ -1,6 +1,14 @@
+![lightcap: Lighthouse audits compressed for Claude, as an MCP server or CLI](https://raw.githubusercontent.com/ICJIA/lightcap-mcp/main/docs/og-image.png)
+
 # @icjia/lightcap
 
-A lightweight local MCP server that runs Google Lighthouse audits and returns compressed, actionable results optimized for Claude's context window.
+[![npm](https://img.shields.io/npm/v/@icjia/lightcap?color=111&label=npm)](https://www.npmjs.com/package/@icjia/lightcap)
+[![license: MIT](https://img.shields.io/badge/license-MIT-111)](LICENSE)
+![MCP server + CLI](https://img.shields.io/badge/runs%20as-MCP%20server%20%2B%20CLI-111)
+
+A lightweight local MCP server **and command-line tool** that runs Google Lighthouse audits and returns compressed, actionable results optimized for Claude's context window.
+
+**New in 0.3: the `lightcap` CLI.** It does everything the MCP server does, so Claude (or any coding agent) can run audits from the shell without the MCP server installed. That saves the tokens its tool definitions take up in every session. See [MCP or CLI?](#mcp-or-cli) and [How language models use the CLI](#how-language-models-use-the-cli).
 
 ## Why?
 
@@ -44,6 +52,12 @@ LightCap runs two ways, and both produce **the same compressed text output** fro
 - **CLI**: Claude (or you) runs `lightcap a11y <url>` through the shell. No server registration, no tool definitions in context, nothing running between audits. This is the lighter option if you want to save tokens and credits, and it works the same on macOS and Linux.
 
 You can run both, or uninstall the MCP server and rely on the CLI alone (see [Using the CLI instead of the MCP server](#using-the-cli-instead-of-the-mcp-server)).
+
+### Why the CLI exists
+
+lightcap started as an MCP server, and that's still a great way to run it. But an MCP server has a standing cost: every registered server's tool definitions (`run_audit`, `run_a11y` and `get_status`, with their schemas and descriptions) are sent to the model in every session, whether or not you audit anything that day. A server process also starts with each session.
+
+The CLI removes that overhead. It is the same code producing the same compressed report. The difference is how the model reaches it: it runs a shell command when it needs an audit, and nothing is loaded the rest of the time. Every coding agent with a shell can use it too, not only MCP clients: Claude Code, Codex, Cursor's agent, Aider, or a CI script.
 
 ### Feature parity
 
@@ -378,6 +392,79 @@ Prefer npm? `npm install -g @icjia/lightcap` installs the same `lightcap` comman
      `lightcap --quiet a11y <url>` (--wcag-only), `lightcap status`.
      Output is compressed plain text; re-audits print a "Δ vs last run" line.
    ```
+
+### How language models use the CLI
+
+Once `lightcap` is on your `PATH` (or aliased), a model uses it exactly the way you would: it runs the command in its shell tool and reads the report from stdout. There is nothing to register. The model only needs to know the command exists, which is what the `CLAUDE.md` / `AGENTS.md` note above is for.
+
+A typical session, with the commands the model runs on its own:
+
+```bash
+lightcap --quiet a11y http://localhost:3000
+lightcap --quiet audit http://localhost:3000 -c performance,seo -v mobile
+lightcap --quiet a11y http://localhost:3000 --wcag-only
+lightcap status
+```
+
+What comes back is the same compact plain text the MCP tools return, small enough to read in full:
+
+```
+Δ vs last run: A11y 88→95 · fixed: color-contrast, image-alt · new: none
+A11y: http://localhost:3000/ [desktop] 95/100 — 1 issues (1s)
+
+── Serious (1 issues, 1 el) ──
+  ✗ link-name [2.4.4] (1 el)
+    → nav > a.icon-only
+...
+```
+
+From there the model runs the usual loop: audit → read the issues → edit the code → re-run the same `lightcap` command, whose first line now reports what changed (`Δ vs last run`).
+
+Tips for agents:
+
+- **Use `--quiet`.** It keeps progress logs off stderr, so the model's context only holds the report.
+- **Exit codes:** `0` on success, `1` on any error, with a single readable `Error: ...` line.
+- **Other agents:** put the same note in whatever file your agent reads: `AGENTS.md` (Codex and others), `.cursor/rules`, `CONVENTIONS.md` (Aider), and so on.
+
+  ```markdown
+  - For Lighthouse audits, use the `lightcap` CLI via Bash:
+    `lightcap --quiet audit <url>` (-c categories, -n <max>, -v mobile, -d <dir>),
+    `lightcap --quiet a11y <url>` (--wcag-only). Re-audits print a "Δ vs last run" line.
+    Output is compressed plain text. Run `lightcap <command> --help` for all flags.
+  ```
+
+### Setting up the alias by hand (zsh and bash)
+
+`install-cli.sh` does this for you. To do it yourself, point an alias at `src/cli.js` in your clone. Replace `/path/to/lightcap-mcp` with the real path.
+
+**zsh** (the default shell on macOS):
+
+```bash
+echo "alias lightcap='node \"/path/to/lightcap-mcp/src/cli.js\"'" >> ~/.zshrc
+source ~/.zshrc
+lightcap --version
+```
+
+**bash** (the usual default on Linux):
+
+```bash
+echo "alias lightcap='node \"/path/to/lightcap-mcp/src/cli.js\"'" >> ~/.bashrc
+source ~/.bashrc
+lightcap --version
+```
+
+On macOS, bash login shells read `~/.bash_profile` rather than `~/.bashrc`. If the alias doesn't appear in a new Terminal window, add `[ -f ~/.bashrc ] && . ~/.bashrc` to `~/.bash_profile`.
+
+**Aliases vs. agents.** Shells only expand aliases in *interactive* sessions. A coding agent's shell tool may run commands non-interactively and never see the alias. That's why `install-cli.sh` also puts a real executable on your `PATH`. To do that by hand:
+
+```bash
+mkdir -p ~/.local/bin
+ln -sf "/path/to/lightcap-mcp/src/cli.js" ~/.local/bin/lightcap
+chmod +x "/path/to/lightcap-mcp/src/cli.js"
+command -v lightcap    # should print ~/.local/bin/lightcap
+```
+
+(`~/.local/bin` must be on your `PATH`. Add `export PATH="$HOME/.local/bin:$PATH"` to your `~/.zshrc` or `~/.bashrc` if it isn't.) `npm install -g @icjia/lightcap` achieves the same thing without a clone.
 
 ### Commands
 
