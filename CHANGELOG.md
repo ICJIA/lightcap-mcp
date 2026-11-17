@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- README: corrected the token-savings claim for the CLI. Claude Code defers MCP tool definitions (the model sees little more than a tool's name until it's needed), so dropping the MCP server saves few tokens there. The standing per-session cost applies in clients that load every definition up front. The CLI's client-independent benefits are no per-session server process and working in any agent with a shell, or in scripts and CI.
+
 ## 0.3.1 — 2026-11-17
 
 ### Changed

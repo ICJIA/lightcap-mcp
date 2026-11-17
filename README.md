@@ -8,7 +8,7 @@
 
 A lightweight local MCP server **and command-line tool** that runs Google Lighthouse audits and returns compressed, actionable results optimized for Claude's context window.
 
-**New in 0.3: the `lightcap` CLI.** It does everything the MCP server does, so Claude (or any coding agent) can run audits from the shell without the MCP server installed. That saves the tokens its tool definitions take up in every session. See [MCP or CLI?](#mcp-or-cli) and [How language models use the CLI](#how-language-models-use-the-cli).
+**New in 0.3: the `lightcap` CLI.** It does everything the MCP server does, so Claude (or any coding agent) can run audits from the shell without the MCP server installed. No server process per session, and it works in any agent with a shell. See [MCP or CLI?](#mcp-or-cli) and [How language models use the CLI](#how-language-models-use-the-cli).
 
 ## Why?
 
@@ -48,16 +48,19 @@ This audit → fix → re-audit loop is what makes an MCP server more valuable t
 
 LightCap runs two ways, and both produce **the same compressed text output** from the same code (`runner.js` + `compress.js` + `diff.js`):
 
-- **MCP server**: Claude calls `run_audit`, `run_a11y` and `get_status` directly. Registering it means its tool definitions are part of every Claude Code session and a server process is spawned for each one.
-- **CLI**: Claude (or you) runs `lightcap a11y <url>` through the shell. No server registration, no tool definitions in context, nothing running between audits. This is the lighter option if you want to save tokens and credits, and it works the same on macOS and Linux.
+- **MCP server**: Claude calls `run_audit`, `run_a11y` and `get_status` directly. Registering it means a server process is started for every session, and the client has to load its tool definitions (Claude Code loads them on demand; some clients load every definition up front).
+- **CLI**: Claude (or you) runs `lightcap a11y <url>` through the shell. No server registration and nothing running between audits. It works the same on macOS and Linux, and in any agent that can run shell commands.
 
 You can run both, or uninstall the MCP server and rely on the CLI alone (see [Using the CLI instead of the MCP server](#using-the-cli-instead-of-the-mcp-server)).
 
 ### Why the CLI exists
 
-lightcap started as an MCP server, and that's still a great way to run it. But an MCP server has a standing cost: every registered server's tool definitions (`run_audit`, `run_a11y` and `get_status`, with their schemas and descriptions) are sent to the model in every session, whether or not you audit anything that day. A server process also starts with each session.
+lightcap started as an MCP server, and that's still a great way to run it. But a registered MCP server has a standing cost, and how big it is depends on the client:
 
-The CLI removes that overhead. It is the same code producing the same compressed report. The difference is how the model reaches it: it runs a shell command when it needs an audit, and nothing is loaded the rest of the time. Every coding agent with a shell can use it too, not only MCP clients: Claude Code, Codex, Cursor's agent, Aider, or a CI script.
+- **Clients that load every tool definition up front** send `run_audit`, `run_a11y` and `get_status`, with their schemas and descriptions, to the model in every session, whether or not you audit anything that day.
+- **Claude Code** defers MCP tool definitions: until a tool is needed, the model sees little more than its name. So in Claude Code the token saving from dropping the server is small.
+
+What doesn't depend on the client: a registered server starts a process with every session, and it only works in MCP clients. The CLI has neither cost. It is the same code producing the same compressed report, run as a shell command only when an audit is needed, in any agent that has a shell (Claude Code, Codex, Cursor's agent, Aider) or in a script or CI job.
 
 ### Feature parity
 
